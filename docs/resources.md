@@ -1,5 +1,16 @@
 # Resources of the multi-mode image
 
+## Current image: November 14, 2026
+
+The image with Motorola talk-permit tones, the pink theme, APRS/GPS, and typed DMR messages (patch 0016) uses
+**542,456 bytes of flash** and **211,424 of 211,456 bytes of static RAM** (32 bytes unallocated). The RAM figure
+already includes the RTOS heap. The composer reuses the message-view scratch buffer; its net static RAM increase
+is 8 bytes. The build has zero compiler warnings, and the static stack check passes (least free: idle task, 136
+bytes). No on-radio heap measurement or over-the-air message test was performed for this change.
+
+The figures and feature comparisons below are the earlier November 13 snapshot, before the added tones, theme,
+APRS, and message editor.
+
 One image carries every mode: FM, DMR, P25 conventional, NXDN48 and P25 trunking (control channel, FDMA voice).
 The Phase 2 layer is built too. Built with `tools/build_radiofoundry.py`, RadioFoundry pinned at `dfbaf20c`, on
 2026-11-13. Not measured on a radio: the figures are the linker's, the static stack check's, and host estimates

@@ -1,0 +1,715 @@
+--- a/core/ui/ui_menus.c
++++ b/core/ui/ui_menus.c
+@@ -331,7 +331,13 @@
+ 	.count = act_count, .item = act_item, .select = act_select, .target = act_target, .title = act_title,
+ };
+ 
+-// ======================= Message composer (canned first) =======================
++// The message view and text entry never draw together; share their scratch space on RAM-limited radios.
++static char text_buf[UI_MSG_TEXT_MAX + 48];
++#if CONFIG_DMR_SMS
++static void compose_write(void);
++#endif
++
++// ======================= Message composer =======================
+ 
+ // Sent in the language in use (the text goes out as UTF-16, Latin-1 included)
+ static const char *const canned[] = { TRN("OK"), TRN("On my way"), TRN("Call me"), TRN("Can't talk now") };
+@@ -349,7 +355,8 @@
+ 		sb_chr(&b, '"');
+ 	} else {
+ 		str_copy(it->label, sizeof it->label, TR("Write..."));
+-		it->flags |= UI_ITEM_DIM;
++		if (!CONFIG_DMR_SMS)
++			it->flags |= UI_ITEM_DIM;
+ 	}
+ }
+ 
+@@ -375,8 +382,13 @@
+ 	(void)hold;
+ 	if (i < CANNED_N)
+ 		send_text(tr(canned[i]));
+-	else
++	else {
++#if CONFIG_DMR_SMS
++		compose_write();
++#else
+ 		ui_toast(TR("Typing: not in this build"));
++#endif
++	}
+ }
+ 
+ static const char *compose_title(void)
+@@ -650,13 +662,12 @@
+ 
+ static const char *msg_body(void)
+ {
+-	static char t[UI_MSG_TEXT_MAX + 48];
+ 	ui_msg_t m;
+ 	if (!ui_svc_msg_get(ui_frame()->arg, &m))
+ 		return TR("Message deleted");
+ 	// "From Joe Smith, 2m ago" (the ID where there is no name; # gives the station's actions), then the text
+ 	sbuf_t b;
+-	sb_init(&b, t, sizeof t);
++	sb_init(&b, text_buf, sizeof text_buf);
+ 	sb_str(&b, m.sent ? TR("To ") : TR("From "));
+ 	if (m.name[0])
+ 		sb_str(&b, m.name);
+@@ -666,7 +677,7 @@
+ 	sb_age_long(&b, m.age_ms);
+ 	sb_chr(&b, '\n');
+ 	sb_str(&b, m.text);
+-	return t;
++	return text_buf;
+ }
+ 
+ static const ui_scr_def_t message_screen = {
+@@ -2051,9 +2062,11 @@
+ 		break;
+ 	}
+ 	case CE_TG:
++#if CONFIG_CHANNEL_EDIT
+ 		if (editing && ced_len > 0)
+ 			sb_str(&b, ced_digits);
+ 		else
++#endif
+ 			sb_u32(&b, ch->talkgroup, 1);
+ 		break;
+ 	case CE_RX:
+@@ -2637,6 +2650,10 @@
+ 	.count = discard_count, .item = discard_item, .select = discard_select, .body = discard_body,
+ };
+ 
++#endif // CONFIG_CHANNEL_EDIT
++#endif // CONFIG_CHANNEL_LIST
++
++#if CONFIG_CHANNEL_EDIT || CONFIG_DMR_SMS
+ // ======================= Text entry: keypad letters (ui.md 2.1) =======================
+ // Phone keypad: in ABC / abc, 2-9 cycle their letters, the digit, then the letters in the other case (ABC: A B C 2 a b
+ // c); 1 cycles punctuation and 0 a space, 0 and a few signs. The same key within 1 s takes the next one, another key
+@@ -2650,7 +2667,6 @@
+ static char *text_target;
+ static void (*text_done)(void);		// called once the text is kept (NULL: none)
+ static uint8_t text_max;
+-static char text_buf[CODEPLUG_NAME_LEN + 1];
+ static uint8_t text_len;
+ static int8_t text_key = -1;		// the key that typed the last character, -1 = none to cycle
+ static uint8_t text_idx;
+@@ -2658,6 +2674,7 @@
+ enum { TEXT_UPPER, TEXT_DIGITS, TEXT_LOWER, TEXT_MODES };	// the order # cycles through
+ static uint8_t text_mode;
+ 
++#if CONFIG_CHANNEL_EDIT
+ static void ui_text_open(char *target, uint8_t max)
+ {
+ 	text_target = target;
+@@ -2665,16 +2682,21 @@
+ 	text_max = max < CODEPLUG_NAME_LEN ? max : CODEPLUG_NAME_LEN;
+ 	ui_push(SCR_TEXT, 0);
+ }
++#endif
+ 
+ static void text_enter(void)
+ {
+-	strncpy(text_buf, text_target, text_max);
++	if (text_target != NULL)
++		strncpy(text_buf, text_target, text_max);
++	else
++		text_buf[0] = 0;
+ 	text_buf[text_max] = 0;
+ 	text_len = (uint8_t)strlen(text_buf);
+ 	text_key = -1;
+ 	text_mode = TEXT_UPPER;
+ }
+ 
++#if CONFIG_CHANNEL_EDIT
+ static uint16_t text_count(void) { return 1; }
+ 
+ static void text_item(uint16_t i, ui_item_t *it)
+@@ -2684,6 +2706,61 @@
+ 	sb_init(&b, it->label, sizeof it->label);
+ 	sb_str(&b, text_buf);
+ 	sb_chr(&b, '_');	// the cursor; the mode is in the title
++}
++#endif
++
++#if CONFIG_DMR_SMS
++#define COMPOSE_TEXT_MAX 140u // Fits every supported DMR message format.
++_Static_assert(COMPOSE_TEXT_MAX <= UI_MSG_TEXT_MAX, "the message fits the UI buffer");
++
++static void compose_write(void)
++{
++	text_target = NULL;
++	text_done = NULL;
++	text_max = COMPOSE_TEXT_MAX;
++	ui_push(SCR_MESSAGE_WRITE, 0);
++}
++
++static uint16_t compose_columns(void)
++{
++	unsigned cols = (unsigned)(gfx_width() - 2 - ui_layout.small->w) / ui_layout.small->w;
++	unsigned max = sizeof(((ui_item_t *)0)->label) - 2u;
++	return (uint16_t)(cols == 0 ? 1 : cols > max ? max : cols);
++}
++
++static uint16_t compose_lines(void)
++{
++	unsigned n = text_len + (ui_frame()->scr == SCR_MESSAGE_WRITE ? 1u : 0u);
++	return (uint16_t)((n + compose_columns() - 1u) / compose_columns());
++}
++
++static void compose_line(uint16_t i, ui_item_t *it)
++{
++	unsigned start = i * compose_columns();
++	unsigned n = start < text_len ? text_len - start : 0;
++	if (n > compose_columns())
++		n = compose_columns();
++	memcpy(it->label, text_buf + start, n);
++	if (n < compose_columns() && start + n == text_len && ui_frame()->scr == SCR_MESSAGE_WRITE)
++		it->label[n++] = '_';
++	it->label[n] = 0;
++}
++
++static void compose_send(uint16_t i, bool hold)
++{
++	(void)i;
++	(void)hold;
++	send_text(text_buf);
++}
++#endif
++
++static void text_changed(void)
++{
++#if CONFIG_DMR_SMS
++	if (text_target == NULL)
++		ui_frame()->focus = compose_lines() - 1u;
++#endif
++	ui_dirty();
+ }
+ 
+ static char text_case(char c)
+@@ -2709,14 +2786,15 @@
+ 	return text_mode == TEXT_LOWER ? c : (char)(c - 'A' + 'a');	// then the other case
+ }
+ 
+-static void text_append(char c)
++static bool text_append(char c)
+ {
+ 	if (text_len >= text_max) {
+ 		ui_toast(TR("That's the most it can hold"));
+-		return;
++		return false;
+ 	}
+ 	text_buf[text_len++] = c;
+ 	text_buf[text_len] = 0;
++	return true;
+ }
+ 
+ static bool text_key_fn(const input_event_t *ev)
+@@ -2738,11 +2816,10 @@
+ 			text_key = k;
+ 		} else {
+ 			text_idx = 0;
+-			text_append(text_char(set, 0));
+-			text_key = k;
++			text_key = text_append(text_char(set, 0)) ? k : -1;
+ 		}
+ 		text_ms = now;
+-		ui_dirty();
++		text_changed();
+ 		return true;
+ 	}
+ 	int dir = ev->action == ACT_NAV_UP ? 1 : ev->action == ACT_NAV_DOWN ? -1 :
+@@ -2757,13 +2834,13 @@
+ 		else
+ 			text_buf[text_len - 1] = (char)(' ' + (text_buf[text_len - 1] - ' ' + dir + 95) % 95);
+ 		text_key = -1;
+-		ui_dirty();
++		text_changed();
+ 		return true;
+ 	}
+ 	if (ev->action == ACT_CONTEXT && ev->gesture == GESTURE_PRESS) {
+ 		text_mode = (uint8_t)((text_mode + 1u) % TEXT_MODES);
+ 		text_key = -1;	// the next key starts a new character
+-		ui_dirty();
++		text_changed();
+ 		return true;
+ 	}
+ 	if (ev->action == ACT_BACK && ev->gesture == GESTURE_PRESS && text_len == 0) {
+@@ -2775,19 +2852,32 @@
+ 		if (text_len > 0)
+ 			text_buf[--text_len] = 0;
+ 		text_key = -1;
+-		ui_dirty();
++		text_changed();
+ 		return true;
+ 	}
+ 	if (ev->action == ACT_SELECT && press) {
+ 		if (!(board.caps & CAP_KEYPAD) && ev->gesture == GESTURE_PRESS) {
+ 			text_append(text_len > 0 ? text_buf[text_len - 1] : 'A');	// the next character, started as this one
+ 		} else {
++#if CONFIG_DMR_SMS
++			if (text_target == NULL) {
++				if (text_len == 0)
++					ui_toast(TR("Type a message first"));
++				else {
++					// Replace the editor: Contacts > Actions > Compose already uses the whole stack.
++					ui_frame()->scr = SCR_MESSAGE_REVIEW;
++					ui_frame()->focus = ui_frame()->top = 0;
++					ui_dirty();
++				}
++				return true;
++			}
++#endif
+ 			strcpy(text_target, text_buf);
+ 			ui_pop();
+ 			if (text_done != NULL)
+ 				text_done();
+ 		}
+-		ui_dirty();
++		text_changed();
+ 		return true;
+ 	}
+ 	return false;
+@@ -2797,15 +2887,56 @@
+ static const char *text_title(void)
+ {
+ 	static const char *const modes[TEXT_MODES] = { "ABC", "123", "abc" };
++#if CONFIG_DMR_SMS
++	if (text_target == NULL) {
++		static char title[20];
++		sbuf_t b;
++		sb_init(&b, title, sizeof title);
++		sb_str(&b, modes[text_mode]);
++		sb_chr(&b, ' ');
++		sb_u32(&b, text_len, 1);
++		sb_str(&b, "/140");
++		return title;
++	}
++#endif
+ 	return modes[text_mode];
+ }
+ 
++#if CONFIG_CHANNEL_EDIT
+ static const ui_scr_def_t text_screen = {
+ 	.name = "text", .flags = SF_LIST, .prefix = TRN("Name"), .title = text_title,
+ 	.hint = TRN(TEXT_ALT_OPEN "Back delete  # ABC/123/abc  OK keep" TEXT_ALT_NEXT "Back del  # mode  OK" TEXT_ALT_CLOSE),
+ 	.count = text_count, .item = text_item, .key = text_key_fn, .enter = text_enter,
+ };
+-
++#endif
++
++#if CONFIG_DMR_SMS
++static bool compose_review_key(const input_event_t *ev)
++{
++	if (ev->action != ACT_BACK || ev->gesture != GESTURE_PRESS)
++		return false;
++	ui_frame()->scr = SCR_MESSAGE_WRITE;
++	text_key = -1;
++	text_changed();
++	return true;
++}
++
++static const ui_scr_def_t message_write_screen = {
++	.name = "message-write", .flags = SF_LIST, .prefix = TRN("Message"), .title = text_title,
++	.hint = TRN("OK review  # mode  Back delete"),
++	.count = compose_lines, .item = compose_line, .key = text_key_fn, .enter = text_enter,
++};
++
++static const ui_scr_def_t message_review_screen = {
++	.name = "message-review", .flags = SF_LIST, .prefix = TRN("To"), .title = compose_title,
++	.hint = TRN("OK send  Back edit"),
++	.count = compose_lines, .item = compose_line, .select = compose_send, .key = compose_review_key,
++};
++#endif
++#endif // CONFIG_CHANNEL_EDIT || CONFIG_DMR_SMS
++
++#if CONFIG_CHANNEL_LIST
++#if CONFIG_CHANNEL_EDIT
+ #if CONFIG_CONTACT_EDIT
+ // ======================= The contact editor (ui.md 2.4) =======================
+ // A new contact: from Find's "Create contact" on a typed number, or a station's actions (Save as contact). Name (text
+@@ -5868,6 +5999,9 @@
+ 	[SCR_VOLUME] = &volume_screen, [SCR_LANGUAGE] = &lang_screen,
+ 	[SCR_DMR_ID] = &dmr_id_screen,
+ 	[SCR_CP_FOREIGN] = &cpf_screen,
++#if CONFIG_DMR_SMS
++	[SCR_MESSAGE_WRITE] = &message_write_screen, [SCR_MESSAGE_REVIEW] = &message_review_screen,
++#endif
+ #if CONFIG_REF_TRIM
+ 	[SCR_REF_TRIM] = &trim_screen,
+ #endif
+--- a/core/ui/ui_nav.h
++++ b/core/ui/ui_nav.h
+@@ -35,6 +35,7 @@
+ 	SCR_CONTACT_EDIT,		// the contact editor (CONFIG_CONTACT_EDIT): a new contact, from ui_target
+ 	SCR_LANGUAGE,			// Settings > Display > Language: every language, those not built dimmed
+ 	SCR_CP_FOREIGN,			// another firmware's codeplug: what the first edit does with it (ui_svc_codeplug_answer)
++	SCR_MESSAGE_WRITE, SCR_MESSAGE_REVIEW, // DMR free text and its send confirmation (CONFIG_DMR_SMS)
+ 	SCR_COUNT
+ } ui_scr_t;
+ 
+--- a/core/ui/lang/es.po
++++ b/core/ui/lang/es.po
+@@ -1805,8 +1805,20 @@
+ msgstr "Máximo alcanzado"
+ 
+ #: core/ui/ui_menus.c
++msgid "Type a message first"
++msgstr "Escribe un mensaje primero"
++
++#: core/ui/ui_menus.c
+ msgid "{Back delete  # ABC/123/abc  OK keep|Back del  # mode  OK}"
+ msgstr "{Atrás borrar  # ABC/123/abc  OK listo|Atrás borr.  # modo  OK}"
++
++#: core/ui/ui_menus.c
++msgid "OK review  # mode  Back delete"
++msgstr "OK revisar  # modo  Atrás borrar"
++
++#: core/ui/ui_menus.c
++msgid "OK send  Back edit"
++msgstr "OK enviar  Atrás editar"
+ 
+ #: core/ui/ui_menus.c
+ msgid "Type"
+@@ -2277,10 +2289,6 @@
+ msgstr "Licencia: "
+ 
+ #: core/ui/ui_menus.c
+-msgid "Authors:"
+-msgstr "Autores:"
+-
+-#: core/ui/ui_menus.c
+ msgid "Author:"
+ msgstr "Autor:"
+ 
+@@ -2569,6 +2577,10 @@
+ msgstr "Oscuro"
+ 
+ #: core/ui/ui_menus.c
++msgid "Pink"
++msgstr "Rosa"
++
++#: core/ui/ui_menus.c
+ msgid "High contrast"
+ msgstr "Alto contraste"
+ 
+@@ -2599,10 +2611,6 @@
+ #: core/ui/ui_menus.c
+ msgid "Purple"
+ msgstr "Morado"
+-
+-#: core/ui/ui_menus.c
+-msgid "Pink"
+-msgstr "Rosa"
+ 
+ #: core/ui/ui_menus.c
+ msgid "3 min"
+@@ -3140,11 +3148,13 @@
+ msgid "Digital: not in this build"
+ msgstr "Digital: no incluido"
+ 
++#: core/ui/ui_screens.c
++msgid "Digital: modem fault"
++msgstr "Digital: fallo del módem"
++
++#: core/ui/ui_screens.c
+ msgid "Digital: starting"
+ msgstr "Digital: iniciando"
+-
+-msgid "Digital: modem fault"
+-msgstr "Digital: fallo del módem"
+ 
+ #: core/ui/ui_screens.c
+ msgid "Searching for the site"
+--- a/core/ui/lang/it.po
++++ b/core/ui/lang/it.po
+@@ -1805,8 +1805,20 @@
+ msgstr "Non ne entrano di più"
+ 
+ #: core/ui/ui_menus.c
++msgid "Type a message first"
++msgstr "Scrivi prima un messaggio"
++
++#: core/ui/ui_menus.c
+ msgid "{Back delete  # ABC/123/abc  OK keep|Back del  # mode  OK}"
+ msgstr "{Indietro canc.  # ABC/123/abc  OK tieni|Indietro canc  # modo  OK}"
++
++#: core/ui/ui_menus.c
++msgid "OK review  # mode  Back delete"
++msgstr "OK rivedi  # modo  Indietro cancella"
++
++#: core/ui/ui_menus.c
++msgid "OK send  Back edit"
++msgstr "OK invia  Indietro modifica"
+ 
+ #: core/ui/ui_menus.c
+ msgid "Type"
+@@ -2277,10 +2289,6 @@
+ msgstr "Licenza: "
+ 
+ #: core/ui/ui_menus.c
+-msgid "Authors:"
+-msgstr "Autori:"
+-
+-#: core/ui/ui_menus.c
+ msgid "Author:"
+ msgstr "Autore:"
+ 
+@@ -2569,6 +2577,10 @@
+ msgstr "Scuro"
+ 
+ #: core/ui/ui_menus.c
++msgid "Pink"
++msgstr "Rosa"
++
++#: core/ui/ui_menus.c
+ msgid "High contrast"
+ msgstr "Alto contrasto"
+ 
+@@ -2599,10 +2611,6 @@
+ #: core/ui/ui_menus.c
+ msgid "Purple"
+ msgstr "Viola"
+-
+-#: core/ui/ui_menus.c
+-msgid "Pink"
+-msgstr "Rosa"
+ 
+ #: core/ui/ui_menus.c
+ msgid "3 min"
+@@ -3140,11 +3148,13 @@
+ msgid "Digital: not in this build"
+ msgstr "Digitale: non incluso"
+ 
++#: core/ui/ui_screens.c
++msgid "Digital: modem fault"
++msgstr "Digitale: guasto del modem"
++
++#: core/ui/ui_screens.c
+ msgid "Digital: starting"
+ msgstr "Digitale: in avvio"
+-
+-msgid "Digital: modem fault"
+-msgstr "Digitale: guasto del modem"
+ 
+ #: core/ui/ui_screens.c
+ msgid "Searching for the site"
+--- a/tests/host/uiFlowTest.c
++++ b/tests/host/uiFlowTest.c
+@@ -53,6 +53,25 @@
+ 	{ "5 private call by ID", "", "3 1 0 9 9 9 9 down ptt", "txid=3109999 txpriv=1", 9, false },
+ 	{ "6 canned reply to last caller", CALLER, "ctx 3 ok", "sent=1 text=OK", 4, false },
+ 	{ "6 canned to contact by name", "", "5 6 3 ctx 3 ok", "sent=1 text=OK", 6, false },
++#if CONFIG_DMR_SMS
++	{ "6 write a message", CALLER, "ctx 3 up ok", "screen=message-write sent=0", 4, false },
++	{ "6 review typed text before sending", CALLER "ctx 3 up ok", "4 4 6 6 6 5 5 5 2 ok",
++	  "screen=message-review sent=0 shows=HOLA", 10, false },
++	{ "6 send typed text to contact", "5 6 3 ctx 3 up ok 4 4 6 6 6 5 5 5 2 ok", "ok",
++	  "screen=home sent=1 text=HOLA txid=3101234 txpriv=1", 1, false },
++	{ "6 send typed text to a talkgroup", "3 1 0 0 ctx 3 up ok", "2 ok ok",
++	  "screen=home sent=1 text=A txid=3100 txpriv=0", 3, false },
++	{ "6 lowercase, spaces, and digits", CALLER "ctx 3 up ok", "ctx ctx 2 0 long:5 ok ok",
++	  "screen=home sent=1 text=a_5", 7, false },
++	{ "6 empty message stays in editor", CALLER "ctx 3 up ok", "ok",
++	  "screen=message-write sent=0 toast=Type_a_message_first", 1, false },
++	{ "6 return from review and edit", CALLER "ctx 3 up ok 4 4 ok", "back back 2 ok ok",
++	  "screen=home sent=1 text=A", 5, false },
++	{ "6 cancel typed message", CALLER "ctx 3 up ok 4 4", "back back",
++	  "screen=compose sent=0", 2, false },
++	{ "6 receive while typing preserves text", CALLER "ctx 3 up ok 4 4", "msg:3105678,hello 6 ok ok",
++	  "screen=home sent=1 text=HM txid=3101234", 3, false },
++#endif
+ 	{ "7 read message, banner up", "msg:3101234,Meet_at_the_north_lot", "ctx", "screen=message", 1, false },
+ 	{ "7 read message later", "msg:3101234,Meet_at_the_north_lot wait:9000", "ok 2 ok", "screen=message", 3, false },
+ #if CONFIG_ZONE_SHARE
+@@ -1068,7 +1087,8 @@
+ 			fails++;
+ 		}
+ 		// Text entry is the one exception to P4 (principles 4): BACK deletes, and leaves once the field is empty
+-		if (s0.depth > 0 && strcmp(s0.screen, "text") != 0) {
++		if (s0.depth > 0 && strcmp(s0.screen, "text") != 0 && strcmp(s0.screen, "message-write") != 0 &&
++				strcmp(s0.screen, "message-review") != 0) {
+ 			snprintf(path, sizeof path, "%s back", nodes[i].path);
+ 			if (replay(g, map, path, &s1) && s1.depth >= s0.depth && strcmp(s1.screen, s0.screen) == 0) {
+ 				printf("FAIL crawl [%s] %s: BACK doesn't leave it (P4) via '%s'\n", mapname, s0.screen,
+@@ -1117,6 +1137,48 @@
+ 
+ // About (Settings > Advanced): every word readable at every display class (nothing shortened with an ellipsis, all
+ // the way to the end), no status strip while idle, the strip back while transmitting
++#if CONFIG_DMR_SMS
++// The full-length message survives the narrow displays, review, editing, and a refused send.
++static void compose_checks(void)
++{
++	char err[300];
++	for (int g = 0; g < sim_geom_count; g++) {
++		sim_reset(&sim_geoms[g], SIM_MAP_K);
++		bool ok = sim_run("5 6 3 ctx 3 up ok ctx", err, sizeof err); // 123 mode
++		for (int i = 0; ok && i < 140; i++)
++			ok = sim_run("7", err, sizeof err);
++		char issues[SIM_LAYOUT_MAX][160];
++		if (ok && sim_layout_issues(issues, SIM_LAYOUT_MAX) != 0) {
++			snprintf(err, sizeof err, "write layout: %s", issues[0]);
++			ok = false;
++		}
++		if (ok)
++			ok = sim_run("expect:screen=message-write expect:shows=140/140 ctx 8 8 "
++				"expect:toast=That's_the_most_it_can_hold ok expect:screen=message-review expect:sent=0",
++				err, sizeof err);
++		if (ok && sim_layout_issues(issues, SIM_LAYOUT_MAX) != 0) {
++			snprintf(err, sizeof err, "review layout: %s", issues[0]);
++			ok = false;
++		}
++		if (ok)
++			ok = sim_run("back expect:screen=message-write ok msgsend:refuse ok "
++				"expect:screen=message-review expect:sent=0 msgsend:ok ok expect:sent=1 expect:txid=3101234",
++				err, sizeof err);
++		if (ok) {
++			ok = strlen(sim_rec.last_text) == 140 && sim_rec.tx_private;
++			for (int i = 0; ok && i < 140; i++)
++				ok = sim_rec.last_text[i] == '7';
++			if (!ok)
++				strcpy(err, "the recipient or the full message changed");
++		}
++		if (!ok) {
++			printf("FAIL compose [%s]: %s\n", sim_geoms[g].name, err);
++			fails++;
++		}
++	}
++}
++#endif
++
+ static void about_checks(void)
+ {
+ 	char err[300];
+@@ -1321,6 +1383,9 @@
+ 	for (size_t i = 0; i < sizeof flows_f / sizeof flows_f[0]; i++)
+ 		run_flow(&flows_f[i], gf, SIM_MAP_F, "F few keys");
+ 	printf("# %d flows run\n", flows_run);
++#if CONFIG_DMR_SMS
++	compose_checks();
++#endif
+ 	about_checks();
+ 	call_screen_checks();
+ 	vfo_split_dmr_checks();
+--- a/tests/host/uiSim.c
++++ b/tests/host/uiSim.c
+@@ -89,6 +89,10 @@
+ #endif
+ 	{ "caller_actions", "call:3101234,91,g wait:11000 ctx" },
+ 	{ "compose", "call:3101234,91,g wait:11000 ctx 3" },
++#if CONFIG_DMR_SMS
++	{ "message_write", "5 6 3 ctx 3 up ok 4 4 6 6 6 5 5 5 2" },
++	{ "message_review", "5 6 3 ctx 3 up ok 4 4 6 6 6 5 5 5 2 ok" },
++#endif
+ 	{ "hub", "ok" },
+ 	{ "contacts", "ok 1" },
+ 	{ "contacts_find", "ok 1 5 6" },
+--- a/tests/host/sim/ui_sim.c
++++ b/tests/host/sim/ui_sim.c
+@@ -1744,7 +1744,9 @@
+ }
+ bool ui_svc_msg_send(uint32_t dst, bool group, const char *text)
+ {
+-	(void)group;
++	if (sim_rec.message_refused)
++		return false;
++	sim_rec.tx_private = !group;
+ 	sim_rec.messages_sent++;
+ 	strncpy(sim_rec.last_text, text, sizeof sim_rec.last_text - 1);
+ 	sim_rec.tx_id = dst;
+@@ -2136,7 +2138,7 @@
+ 
+ static bool check(const char *kv, char *err, size_t len)
+ {
+-	char key[32], want[64], got[64];
++	char key[32], want[UI_MSG_TEXT_MAX + 1], got[UI_MSG_TEXT_MAX + 1];
+ 	const char *eq = strchr(kv, '=');
+ 	if (eq == NULL || eq - kv >= (long)sizeof key) {
+ 		snprintf(err, len, "bad expect %s", kv);
+@@ -2655,6 +2657,10 @@
+ 		}
+ 		return true;
+ 	}
++	if (strcmp(t, "msgsend") == 0 && arg != NULL) {
++		sim_rec.message_refused = strcmp(arg, "refuse") == 0;
++		return true;
++	}
+ 	if (strcmp(t, "crashtx") == 0 && arg != NULL) {	// crashtx:ok, crashtx:refuse, crashtx:fail (see crash_sim)
+ 		crash_sim.tx_mode = strcmp(arg, "refuse") == 0 ? CRASH_TX_SIM_REFUSE :
+ 				    strcmp(arg, "fail") == 0 ? CRASH_TX_SIM_FAIL : CRASH_TX_SIM_OK;
+--- a/tests/host/sim/ui_sim.h
++++ b/tests/host/sim/ui_sim.h
+@@ -9,6 +9,7 @@
+ #include <stdint.h>
+ #include <stdbool.h>
+ #include "radio/radio.h"
++#include "ui/ui_svc.h"
+ 
+ // Display classes (information-architecture.md, wireframes) and key maps (7.1 - 7.5)
+ typedef struct {
+@@ -76,7 +77,8 @@
+ 	bool tx_private;
+ 	uint32_t codeplug_writes;	// save to channel, make default
+ 	uint32_t radio_checks, call_alerts, messages_sent;
+-	char last_text[48];
++	char last_text[UI_MSG_TEXT_MAX + 1];
++	bool message_refused;
+ 	uint32_t beeps;			// beeps asked of the radio (any kind)
+ 	uint8_t last_beep;		// ui_beep_t of the last one
+ 	uint32_t vibes;			// vibrations asked of the radio (any pattern)
+--- a/docs/spec/ui.md
++++ b/docs/spec/ui.md
+@@ -110,6 +110,8 @@
+ | Delete Zone | `zonedel` | Delete zone in Zone options: the confirmation, "No, keep it" first (P7) |
+ | Channels | `channels` | Hub 5: every codeplug channel as number and name, in number order, filtered by T9. The value (also in a zone's list): RX frequency and talkgroup, "467.375 TG3100", or FM; beside a long name "467.375 3100", then "TG3100" (the name is never cut for it). The first row is "New from current", New channel from current settings (2.1). OK opens the channel (`channel`), CONTEXT goes to it |
+ | Channel | `channel` | OK in Channels: the channel's settings, editable (2.1). The last rows go to it (in the zone in use if it holds the channel, else the first zone that does; in none, "Not in any zone"), share it (with `CONFIG_ZONE_SHARE`), save, and save as a new channel |
++| Write Message | `message-write` | Write in Compose (`CONFIG_DMR_SMS`): keypad letters, count, and scrolling cursor |
++| Review Message | `message-review` | OK in Write Message: recipient and full text, Up/Down scroll, OK sends, Back edits |
+ | Text entry | `text` | OK on a text row (a channel's name): keypad letters, 2.1 |
+ | Unsaved Changes | `discard` | BACK in the channel editor with unsaved changes (2.1), or in the contact editor (2.4) |
+ | New Contact | `contactedit` | New contact in Contacts, Find's "Create contact 3100", or Save as contact in a station's or talkgroup's actions (`CONFIG_CONTACT_EDIT`): the contact editor (2.4) |
+@@ -612,7 +614,13 @@
+   between steps is refused with the range. Only key slot 1 is reachable from the menu.
+ - Switching USB to network has no confirmation (P7: reversible); the info page says what stops and how to get back.
+ - A failed message isn't kept for a retry: the banner says "Not delivered: send it again".
+-- Compose offers canned texts only ("OK", "On my way", "Call me", "Can't talk now"), sent in the language in use (2.5); free text is dimmed.
++- Compose offers canned texts ("OK", "On my way", "Call me", "Can't talk now"), sent in the language in use (2.5).
++  With `CONFIG_DMR_SMS`, Write opens `message-write`: the shared keypad editor (2.1), up to 140 ASCII characters
++  so every message format fits. The title shows the mode and length; character rows scroll to keep the cursor
++  visible. OK opens `message-review`, whose title names the recipient. Up/Down scroll the complete text, OK sends,
++  and Back returns to editing. The review replaces the editor's stack frame so the Contacts path fits six frames.
++  Empty text is refused, and a refused queue request keeps the review available for another try. The message view
++  and the shared text editor use the same scratch buffer; only the foreground screen draws it.
+ - Deleting a message has no undo (`sms_inbox_delete` removes it from the RAM inbox).
+ - Save to channel and the permanent talk target write the codeplug as a storage job on the housekeeping task, so the
+   UI no longer stalls for the flash write. A permanent target must be a stored contact: a typed ID is set for now at
+--- a/docs/user/10-messages-and-signaling.md
++++ b/docs/user/10-messages-and-signaling.md
+@@ -60,7 +60,14 @@
+ With confirmed IP data turned off (`tools/rfoundry_debug.py data ip-settings auto off`), ETSI messages to a person also go
+ once, with "Sent to".
+ 
+-Typing your own text isn't built yet. "Write..." is dimmed. Messages you send aren't stored in the radio.
++For your own text, choose **Write...**. Keys **2-9** cycle letters as on a phone; wait a second before the next letter
++on the same key. **0** enters a space, **1** punctuation, and holding a digit enters the digit. **#** cycles uppercase,
++numbers, and lowercase. **Back** deletes; with no text left it returns to Compose. Hold **Back** to cancel and go Home.
++
++The title shows the mode and character count, up to **140 characters** in any message format. **OK** opens the review
++with the recipient in its title. **Up/Down** scroll the complete message; **Back** returns to editing; **OK** sends.
++Nothing is sent on entering the review. If the send cannot start, the text stays there so you can try again.
++Messages you send aren't stored in the radio.
+ 
+ ## Message formats
+ 
+--- a/docs/user/01-introduction.md
++++ b/docs/user/01-introduction.md
+@@ -38,7 +38,7 @@
+ |---|---|
+ | Verified on the radio | Tested on a radio, on air against the SDR bench where RF is involved. The [Radio reference](23-radios.md) says what is verified on each radio |
+ | Built, host-tested | Works against simulated chips in the host tests, or is only partly checked on a radio |
+-| Not built yet | Shown in the menus, dimmed, with a message when selected: voice prompts, typed text messages, speed dial, editing or deleting a stored contact on the radio |
++| Not built yet | Shown in the menus, dimmed, with a message when selected: voice prompts, speed dial, editing or deleting a stored contact on the radio |
+ 
+ Some features aren't on every radio. Either the hardware lacks something, or the radio's board code isn't written yet.
+ The [Radio reference](23-radios.md) lists them for each radio.

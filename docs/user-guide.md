@@ -35,6 +35,23 @@ Use the codeplug editor or a CSV file. The radio's menu also edits NAC, RAN, tal
 | System ID | - | - | 3 hex digits, from the system's administrator |
 | Unit ID | the channel's ID, else the radio's DMR ID | the same; NXDN needs 1-65519 | the same: **the ID the administrator assigned you** |
 
+## Writing a DMR message
+
+On a DMR channel, open **Contacts**, focus the person or talkgroup, press **#**, then **3 (Message)**.
+Choose **Write...**. Keys **2-9** cycle letters; pause a second between letters on the same key. **0** enters
+a space, **1** punctuation, and holding a digit enters that digit. **#** cycles uppercase, numbers, and lowercase.
+**Back** deletes; on an empty message it returns to Compose. Hold **Back** to cancel and go Home.
+
+The title shows the input mode and character count, up to **140 characters**. **OK** opens the review, with the
+recipient in the title. **Up/Down** scroll the complete text, **Back** returns to editing, and **OK** sends.
+Entering the review does not transmit. A refused send keeps the text available for another try; sent text is not
+saved across power cycles.
+
+The existing message-format setting chooses ETSI IP text, ETSI short data, or Motorola TMS. The channel supplies
+the frequencies, timeslot, and color code; a recipient ID alone is not enough. A private message requests delivery
+confirmation where supported; group messages have no confirmation. The new editor has passed host tests and the
+DM-32 build, but sending typed text has not been checked on the physical radio.
+
 ## Using a P25 or NXDN channel
 
 The screen shows:

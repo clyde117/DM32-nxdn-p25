@@ -9,6 +9,7 @@ Firmware abierto y multimodo para el **Baofeng DM-32UV**: FM, DMR, **APCO P25 fa
 | Función | Estado |
 |---|---|
 | FM y DMR | Funcionan (base RadioFoundry) |
+| Mensajes DMR de texto libre | Hasta 140 caracteres desde Contactos; revisión antes de enviar. Compilado y probado en simulador, pendiente de probar en el aire |
 | P25 convencional, RX y TX | Verificado en la radio (voz IMBE en ambos sentidos) |
 | NXDN48, RX | Verificado en la radio (tramas, llamada y voz AMBE sin errores) |
 | NXDN48, TX | Funciona: el receptor del firmware y dsd-fme decodifican la TX del DM-32 (RAN 1, llamada de grupo TG 1, voz), capturada con un Pluto+ |
@@ -37,6 +38,7 @@ Parches de la serie (`integration/radiofoundry/patches/`):
 | `0012-pink-theme` | El tema claro pasa a ser el tema «Rosa» |
 | `0013-tools-menu-built-features` | APRS y posición activados; Herramientas oculta lo que no está en la compilación (hotspot, red USB, repetidor de 1 frecuencia) |
 | `0014-editor-nxdn-ran-on-mode-change` | Editor web de codeplug: al pasar un canal entre P25 y NXDN toma el NAC o RAN por defecto de su familia, y el formulario solo valida los campos visibles |
+| `0016-dmr-free-text-messages` | Habilita «Escribir…» en Mensaje: teclado, hasta 140 caracteres, revisión con destinatario y envío DMR; reutiliza el búfer de texto existente |
 
 Fuera de la serie: recepción NXDN corregida (filtros del FD6818 en la ruta plana, FSW en ambas polaridades, ganancia AF) en `integration/radiofoundry/nxdn/` y `src/nxdn/`.
 
