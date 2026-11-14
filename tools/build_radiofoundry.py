@@ -149,7 +149,7 @@ def prepare(write=True, apply_series=True, limit=None):
     transform("platform/hrc7000/FreeRTOSConfig.h", [
         ("#define configUSE_STATS_FORMATTING_FUNCTIONS\t0", "#define configUSE_STATS_FORMATTING_FUNCTIONS\t0\n#define configGENERATE_RUN_TIME_STATS CONFIG_CPU_PROFILE\n#if CONFIG_CPU_PROFILE && !defined(__ASSEMBLER__)\nuint32_t hrc_micros(void);\n#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() ((void)0)\n#define portGET_RUN_TIME_COUNTER_VALUE() hrc_micros()\n#endif"),
     ])
-    transform("hal/board.h", [("const hal_radio_t *radio;", "const struct nt_ops *native_modem; /* optional derivative native PHY test backend */\n\tvoid (*native_mic_route)(bool on);\n\tconst hal_radio_t *radio;")])
+    transform("hal/board.h", [("const hal_radio_t *radio;", "const struct nt_ops *native_modem; /* optional derivative native PHY test backend */\n\tvoid (*native_mic_route)(bool on);\n\tvoid (*native_speaker)(bool on); /* optional amplifier gate; preserves PCM routing and queues */\n\tconst hal_radio_t *radio;")])
     transform("hal/hal_audio.h", [("bool (*spk_pending)(void);", "bool (*spk_pending)(void);\n\t/* Optional laboratory playback pacing and fixed read-only diagnostics. */\n\tvoid (*playback_pace)(bool on);\n\tvoid (*playback_stats)(uint32_t out[16]);")])
     transform("platform/hrc7000/audio_pcm.c", [
         ('static void gate_check(void);', 'static void gate_check(void);\n#include "pcm_playback.inc"'),
@@ -161,9 +161,9 @@ def prepare(write=True, apply_series=True, limit=None):
         ('\t.spk_pending = hrc_audio_pcm_spk_pending,', '\t.spk_pending = hrc_audio_pcm_spk_pending,\n#if CONFIG_P25\n\t.playback_pace = playback_pace,\n\t.playback_stats = playback_stats,\n#endif'),
     ])
     write_owned(DEST / "platform/hrc7000/pcm_playback.inc", (ROOT / "integration/radiofoundry/pcm_playback.inc").read_bytes())
-    transform("boards/dm32/board.c", [(".radio = &dm32_radio,", ".radio = &dm32_radio,\n#if CONFIG_P25_NATIVE\n\t.native_modem = &dm32_native_ops,\n#endif\n#if CONFIG_P25_NATIVE\n\t.native_mic_route = dm32_native_mic_route,\n#endif\n#if CONFIG_NXDN\n\t.audio_tap = &dm32_audio_tap,\n#endif"),
+    transform("boards/dm32/board.c", [(".radio = &dm32_radio,", ".radio = &dm32_radio,\n#if CONFIG_P25_NATIVE\n\t.native_modem = &dm32_native_ops,\n#endif\n#if CONFIG_P25_NATIVE\n\t.native_mic_route = dm32_native_mic_route,\n\t.native_speaker = dm32_native_speaker,\n#endif\n#if CONFIG_NXDN\n\t.audio_tap = &dm32_audio_tap,\n#endif"),
         ('#include "pins.h"', '#include "pins.h"\n#include "dm32_firstboot.inc"')])
-    transform("boards/dm32/dm32.h", [("#include <stdbool.h>", "#include <stdbool.h>\n#if CONFIG_P25_NATIVE\n#include \"native_test.h\"\nextern nt_ops dm32_native_ops;\n#endif\n#if CONFIG_P25_NATIVE\nvoid dm32_native_mic_route(bool on);\n#endif\n#if CONFIG_NXDN\n#include \"hal_audio_tap.h\"\nextern const hal_audio_tap_t dm32_audio_tap;\n#endif")])
+    transform("boards/dm32/dm32.h", [("#include <stdbool.h>", "#include <stdbool.h>\n#if CONFIG_P25_NATIVE\n#include \"native_test.h\"\nextern nt_ops dm32_native_ops;\n#endif\n#if CONFIG_P25_NATIVE\nvoid dm32_native_mic_route(bool on);\nvoid dm32_native_speaker(bool on);\n#endif\n#if CONFIG_NXDN\n#include \"hal_audio_tap.h\"\nextern const hal_audio_tap_t dm32_audio_tap;\n#endif")])
     transform("boards/dm32/radio_dm32.c", [
         ("static void pa_key(void)\n{", "static void pa_key(void)\n{\n#if CONFIG_FIRSTBOOT\n\tif (!firstboot_tx_allowed(FB_PA_KEY)) { firstboot_deny(FB_PA_KEY); board_rf_safe(); return; }\n#endif"),
         ("static void dmr_rf_switch(bool tx)\n{", "static void dmr_rf_switch(bool tx)\n{\n#if CONFIG_FIRSTBOOT\n\tif (tx && !firstboot_tx_allowed(FB_RF_SWITCH)) { firstboot_deny(FB_RF_SWITCH); board_rf_safe(); return; }\n#endif"),
@@ -385,7 +385,10 @@ def main():
                 "native_lab_command":("snapshot",),
                 "p25_voice_rx_dibit":("core/p25/p25_lab.c:sink","core/p25/selftest.c:sink"),
                 "audio_task":("core/p25/p25_lab.c:audio_block",),
-                "start_audio":("playback_pace",),
+                "audio_block":("dm32_native_speaker",),
+                "receive_run":("dm32_native_speaker","hrc_audio_pcm_spk_pending"),
+                "start_audio":("playback_pace","dm32_native_speaker"),
+                "stop_audio":("dm32_native_speaker",),
                 "p25_lab_command":("playback_stats",)}.items():
                 extra+="call "+caller+" "+" ".join(targets)+"\n"
             if not args.no_trunk:

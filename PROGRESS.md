@@ -1,5 +1,21 @@
 # DM-32 conventional P25 progress
 
+## 2026-11-14 P25 idle speaker mute
+
+P25 keeps its PCM receive route active between calls. That also left the speaker amplifier on with no decoded
+audio, allowing idle hiss after a hotspot returned to standby and again after power-on. The worker now gates only
+the amplifier: it opens for decoded audio, waits for the driver's pending tail before closing, and lets the
+talk-permit stream borrow the speaker. The PCM route and queues are preserved.
+
+The regression fails against the previous receiver. Updated ASan/UBSan tests cover quiet startup, five simulated
+minutes without traffic, normal voice and drain, a missing terminator, and the talk-permit stream. Normal and lean
+speaker PCM remain identical (CRC `71608162`). Native modem, first-boot guards, radio-core, NXDN and trunking tests
+pass. Native and native-disabled firmware builds have zero warnings and pass the static stack check. The native
+image uses 542,636 bytes of flash and 211,424/211,456 bytes of static RAM, including the reserved heap.
+
+The amplifier change has not yet been listened to on a physical radio. No calibration or transmit guard changed;
+trunked transmit remains disabled in the default image.
+
 ## 2026-11-13 Phase 4: one image with every mode, resources, hardware checklist, user guide
 
 **One image.** The default build carries FM, DMR, P25 conventional, NXDN48 and P25 trunking (receive), and the

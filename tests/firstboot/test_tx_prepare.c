@@ -10,6 +10,9 @@ static uint32_t timers[7],clock_us=1000,depth;
 #define TIMER_PA 3
 #define DMR_PA_DELAY_US 28000
 enum { PIN_SPK_SOURCE, PIN_MIC_PATH };
+enum { AMP_PCM=2 };
+static bool speaker_on;
+static void amp(uint8_t who,bool on) { assert(who==AMP_PCM);speaker_on=on; }
 static radio_mode_t mode=RADIO_MODE_FM;
 static bool transmitting,dmr_keyed,cal_valid,rx_ok=true;
 static unsigned holds,tx_calls,safe_calls;
@@ -43,6 +46,8 @@ void hn_port_restore(void) { }
 #include "dm32_native.inc"
 int main(void)
 {
+    dm32_native_speaker(true);assert(speaker_on);
+    dm32_native_speaker(false);assert(!speaker_on && !mic_route_writes && !speaker_restores);
     dm32_native_mic_route(true);dm32_native_mic_route(false);
     assert(mic_route_writes==2 && speaker_restores==1);
     native_init();nt_test t;nt_init(&t,NULL);

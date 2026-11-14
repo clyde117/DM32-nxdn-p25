@@ -8,6 +8,7 @@
 #include "cpu_profile.h"
 #include "config.h"
 #include "board.h"
+#include "radio/beep.h"
 #include "hal_time.h"
 #include "debuglink/debuglink_proto.h"
 #include "debuglink/dl_fmt.h"
@@ -307,6 +308,7 @@ static void audio_block(const int16_t *mic,int16_t *spk,void *ctx)
     taskEXIT_CRITICAL();
     /* Keep the digital route through silence and buffering. Toggling it inside
      * this callback empties the driver's queue and discards the current block. */
+    if(ok && board.native_speaker)board.native_speaker(true);
 }
 #endif
 static void sink(void *ctx,const int16_t pcm[160])
@@ -371,6 +373,7 @@ static int start_audio(void)
     audio_on=1;
     if(board.audio->playback_pace)board.audio->playback_pace(pcm_paced!=0);
     board.audio->speaker_pcm(true);
+    if(board.native_speaker)board.native_speaker(false);
     if(board.audio->start(audio_block,NULL))return 1;
     audio_on=0;board.audio->stop();board.audio->speaker_pcm(false);return 0;
 }
@@ -378,6 +381,7 @@ static int start_audio(void)
 static void stop_audio(void)
 {
     if(!audio_on)return;
+    if(board.native_speaker)board.native_speaker(false);
     board.audio->stop();board.audio->speaker_pcm(false);audio_on=0;
 }
 #if CONFIG_P25_NATIVE
@@ -420,6 +424,10 @@ static int receive_run(void)
     int silent_reset=0;
 #endif
     while(ok && !stop_requested) {
+        /* Mute only the amplifier after the PCM tail; retain the route and queue. */
+        taskENTER_CRITICAL();int empty=!fifo.count;taskEXIT_CRITICAL();
+        if(audio_on && empty && board.native_speaker &&
+           (!board.audio->spk_pending || !board.audio->spk_pending()))board.native_speaker(beep_streaming());
 #if CONFIG_P25_NATIVE
         if(session) {
             if(!native_lab_voice_poll(session,&native_state,&native_reason)) { ok=0;break; }

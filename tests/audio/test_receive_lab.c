@@ -16,8 +16,11 @@ static audio_block_cb_t callback;
 static void *callback_ctx;
 static jmp_buf done;
 static unsigned depth,notifies,turn,clock_ms,audio_at,outputs_nonzero,route_seen,stops,native_owned;
-static unsigned native_end,send_live,send_index,send_due,native_limit;
+static unsigned native_end,send_live,send_index,send_due,native_limit,send_count=16;
 static unsigned route_calls,pace_calls,paced=1,pending_until;
+static bool speaker_on;
+static unsigned speaker_opens,silent_callbacks,stream_at,beep_at;
+bool beep_streaming(void) { return beep_at && clock_ms>=beep_at && clock_ms<beep_at+160; }
 static uint32_t output_crc;
 void audio_test_enter(void) { depth++; }
 void audio_test_exit(void) { assert(depth);depth--; }
@@ -35,8 +38,12 @@ void vTaskDelay(TickType_t ms)
     while(callback && clock_ms-audio_at>=20) {
         int16_t mic[160]={0},spk[160];audio_at+=20;
         callback(mic,spk,callback_ctx);
+        if (native_limit && !send_live) { assert(!speaker_on);silent_callbacks++; }
+        if (send_live && send_index>=send_count && clock_ms-stream_at>700) assert(!speaker_on);
+        if (beep_at && clock_ms>=beep_at+20 && clock_ms<beep_at+160) assert(speaker_on);
+        if (beep_at && clock_ms>=beep_at+180) assert(!speaker_on);
         for(unsigned i=0;i<160;i++) {
-            if(spk[i]) { outputs_nonzero++;pending_until=clock_ms+40; }
+            if(spk[i]) { assert(speaker_on);outputs_nonzero++;pending_until=clock_ms+40; }
             for(unsigned j=0;j<2;j++) {
                 output_crc^=((uint16_t)spk[i]>>(8*j))&255u;
                 for(unsigned b=0;b<8;b++)output_crc=(output_crc>>1)^(0xedb88320u&(0u-(output_crc&1u)));
@@ -44,20 +51,21 @@ void vTaskDelay(TickType_t ms)
         }
     }
 }
-static bool audio_start(audio_block_cb_t cb,void *ctx) { callback=cb;callback_ctx=ctx;audio_at=clock_ms;output_crc=0xffffffffu;return true; }
-static void audio_stop(void) { assert(clock_ms>=pending_until);callback=NULL;stops++; }
-static void route(bool on) { route_seen+=on;route_calls++; }
+static bool audio_start(audio_block_cb_t cb,void *ctx) { assert(!speaker_on);callback=cb;callback_ctx=ctx;stream_at=audio_at=clock_ms;output_crc=0xffffffffu;return true; }
+static void audio_stop(void) { assert(!speaker_on && clock_ms>=pending_until);callback=NULL;stops++; }
+static void route(bool on) { speaker_on=on;route_seen+=on;route_calls++; }
+static void speaker(bool on) { assert(!depth);if(!on && callback)assert(clock_ms>=pending_until);speaker_opens+=on && !speaker_on;speaker_on=on; }
 static bool pending(void) { return clock_ms<pending_until; }
 static void pace(bool on) { pace_calls++;assert(on==paced); }
 static const hal_audio_t audio={.start=audio_start,.stop=audio_stop,.speaker_pcm=route,.spk_pending=pending,.playback_pace=pace};
-const board_t board={.audio=&audio};
+const board_t board={.audio=&audio,.native_speaker=speaker};
 int native_lab_reserved(void) { return native_owned; }
 uint32_t native_lab_voice_start(uint32_t hz,uint32_t ms) { assert(hz==145500000);native_end=clock_ms+ms;native_owned=1;send_index=0;send_due=clock_ms;return 42; }
 int native_lab_voice_poll(uint32_t sid,uint8_t *state,uint8_t *reason) { assert(sid==42);*state=clock_ms>=native_end?NT_STOPPED:NT_RX;*reason=*state==NT_RX?0:native_limit?NT_RX_LIMIT:NT_RX_DURATION;return 1; }
 static uint8_t raw[16][36];
 int native_lab_voice_read(uint32_t sid,nt_record *r) {
     assert(sid==42);
-    if(!send_live || send_index>=16 || clock_ms<send_due)return 0;
+    if(!send_live || send_index>=send_count || clock_ms<send_due)return 0;
     memset(r,0,sizeof *r);r->sequence=send_index;r->time_us=send_due*1000u;
     memcpy(r->raw,raw[send_index++],36);send_due+=30;return 1;
 }
@@ -133,10 +141,11 @@ int main(void)
     assert(call(live,sizeof live,1024)==1 && !reply[0]);execute();
     assert(call(&status,1,1024)==129 && word(2)==2 && word(18)==18 && !word(11) && !word(12));
     assert(!word(19) && outputs_nonzero==8145 && stops==3 && output_crc==checked_crc);
-    send_live=0;native_limit=1;live[0]=8;live[5]=0x2c;live[6]=1; /* 300 seconds, no u16 millisecond truncation */
+    send_live=0;pending_until=0;silent_callbacks=0;native_limit=1;live[0]=8;live[5]=0x2c;live[6]=1; /* 300 seconds, no u16 millisecond truncation */
     assert(call(live,sizeof live,1024)==1 && !reply[0]);execute();
     assert(call(&status,1,1024)==129 && word(2)==2 && word(25)==NT_STOPPED && word(26)==NT_RX_LIMIT);
     assert(!word(6) && word(17)>=14999 && !native_owned && stops==4);
+    assert(silent_callbacks>=14999 && speaker_opens && !speaker_on);
     puts("P25 receive lab: bounded RAM replay, real IMBE/CAI golden CRC, paced PCM callbacks, ownership release PASS");
 #else
     for(unsigned op=1;op<=4;op++) { uint8_t p=(uint8_t)op;assert(call(&p,1,1024)==1 && reply[0]==DL_ST_UNAVAILABLE); }
@@ -151,4 +160,15 @@ int main(void)
     printf("PCM_CALLBACK_CRC=%08x\n",output_crc);
     puts("Lean RX: bench commands refused, real live CAI/IMBE audio preserved, no per-sample checks PASS");
 #endif
+    /* A lost terminator still mutes after the last decoded voice and hardware tail. */
+    send_live=1;send_count=15;native_limit=0;live[0]=5;live[5]=0xe8;live[6]=3;
+    unsigned opens=speaker_opens;
+    assert(call(live,sizeof live,1024)==1 && !reply[0]);execute();
+    assert(call(&status,1,1024)==129 && word(2)==2 && word(7)==3 && word(18)==18);
+    assert(speaker_opens>opens && !speaker_on && !native_owned);
+    /* A talk-permit stream borrowing the audio driver must still be audible. */
+    send_live=0;beep_at=clock_ms+100;opens=speaker_opens;
+    assert(call(live,sizeof live,1024)==1 && !reply[0]);execute();
+    assert(speaker_opens>opens && !speaker_on && !native_owned);
+    puts("P25 speaker gate: quiet startup/idle, voice and FIFO tail preserved, lost terminator mutes PASS");
 }

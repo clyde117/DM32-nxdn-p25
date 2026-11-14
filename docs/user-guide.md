@@ -61,6 +61,9 @@ The screen shows:
 
 Calls on another talkgroup, NAC or RAN, or encrypted calls, show but do not play.
 
+On P25, the speaker is muted between calls, including after power-on and after releasing PTT. A continuous hiss
+after the hotspot has returned to standby is not an expected transmit tail.
+
 PTT sends a call to the channel's talkgroup with your unit ID. The time-out timer applies. Busy channel lockout
 refuses PTT while another NAC (RAN) is heard, or any traffic, as the setting says.
 

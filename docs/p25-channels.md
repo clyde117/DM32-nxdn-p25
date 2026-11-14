@@ -40,6 +40,10 @@ encryption sync.
 The home screen shows the talkgroup and the caller's unit ID while a call plays, the emergency flag in the warning
 color, and the last caller's ID and age between calls.
 
+The speaker amplifier is off while no decoded voice is queued or playing, including immediately after boot and
+after returning from transmit. The PCM route stays active to preserve receive timing; the amplifier opens for
+decoded audio and closes after the driver's pending audio has drained, even if the call terminator was lost.
+
 ## Transmit rules
 
 PTT on a P25 channel goes through the radio core's `tx_check` like FM and DMR:

@@ -4,6 +4,7 @@
 #include "hrc_native_port.h"
 static hn_chip native_chip;
 nt_ops dm32_native_ops;
+void dm32_native_speaker(bool on) { amp(AMP_PCM,on); }
 void dm32_native_mic_route(bool on)
 {
     if (on) {
