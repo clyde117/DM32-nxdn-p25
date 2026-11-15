@@ -36,6 +36,20 @@ between the channel's own NAC/RAN and every NAC/RAN, keeping the TX one.
 | System ID | - | - | 3 hex digits, from the system's administrator |
 | Unit ID | the channel's ID, else the radio's DMR ID | the same; NXDN needs 1-65519 | the same: **the ID the administrator assigned you** |
 
+## DMR repeaters with restricted access (RAS)
+
+A repeater with RAS (restricted access to system) alters the checks of each call's header and embedded link control
+with its key, so a radio without the key never sees a valid call and plays nothing. Turn on **digital monitor** (a
+short press of the monitor key, SK1): a whole voice superframe in order on the channel's color code and timeslot then
+plays as an unknown group call (talkgroup and ID 0), until a header or embedded LC that decodes names it. Calls marked
+private (encrypted) still do not play. Without digital monitor the talkgroup can't be told, so nothing plays. Transmit
+through such a repeater needs the system's key, which this firmware doesn't have.
+
+## Air band channels from the stock codeplug
+
+The installer's conversion of the original codeplug now keeps air band (and broadcast FM) channels, also those
+without a TX frequency: they come over as receive only, FM (played in AM in the air band).
+
 ## Writing a DMR message
 
 On a DMR channel, open **Contacts**, focus the person or talkgroup, press **#**, then **3 (Message)**.

@@ -1,0 +1,259 @@
+--- a/core/dmr/call/dmr_call.c
++++ b/core/dmr/call/dmr_call.c
+@@ -106,6 +106,7 @@
+ 	uint8_t le_last_index;
+ 	uint32_t le_last_ms;
+ 	bool le_held;		// le_burst: the last burst, its LC taken before the pair was complete
++	uint8_t le_run;		// voice bursts in order (A-F) with no call, LC or not
+ 	dmr_burst_t le_burst;
+ 	uint32_t le_burst_slot;
+ 	// PI header heard before the call was (late entry after a missed voice LC header)
+@@ -466,6 +467,7 @@
+ 	s.le_active = false;
+ 	s.le_pair = false;
+ 	s.le_held = false;
++	s.le_run = 0;
+ }
+ 
+ static bool group_listened(uint32_t tg, uint32_t now)
+@@ -782,6 +784,25 @@
+ // a voice burst is an LC of this reception (docs/spec/dmr-modem.md 2.4, 6.1). Checking again here against the
+ // previous call's LC cost a whole superframe more whenever the same talker called again (HIL 2026-10-10: a late entry
+ // played from the fourth superframe heard instead of the third)
++// Digital monitor (hear all) on a slot whose voice comes with no LC the receiver can check: a repeater with restricted
++// access (RAS) changes the header's RS parity and the embedded LC's checksum with its key, so neither decodes and the
++// voice is never acquired. A whole superframe in order (A-F, each burst B-F with a good EMB) is a call: played as an
++// unknown group call (talkgroup and caller 0) until an LC that decodes names it. Without digital monitor the group
++// can't be told, so nothing plays (the voice may be another group's)
++static void rx_no_lc(const dmr_burst_t *b, uint32_t now, uint32_t slot)
++{
++	if (!s.cfg.listen.hear_all || s.le_run < DMR_CALL_NO_LC_RUN || !b->crc_ok)
++		return;
++	uint8_t lc[DMR_LC_BYTES] = { DMR_FLCO_GROUP_VOICE };
++
++	rx_lc(lc, b, true, now);
++	s.have_index = false;
++	stats.rx_no_lc_calls++;
++	TR_WHAT('u');
++	if (s.rx == RXC_PLAY)
++		rx_play(b, now, slot);
++}
++
+ static void rx_late_entry(const dmr_burst_t *b, uint32_t now, uint32_t slot)
+ {
+ 	uint8_t i = b->voice_index % 6;
+@@ -792,9 +813,14 @@
+ 	if (!s.le_active || elapsed(now, s.le_last_ms, true, fade_ms())) {
+ 		le_reset();
+ 		s.le_active = true;
++		s.le_run = 1;
+ 	} else if (i == (s.le_last_index + 1) % 6) {
+ 		s.le_pair = true;
+ 		held = s.le_held;
++		if (s.le_run < 255)
++			s.le_run++;
++	} else {
++		s.le_run = 1;
+ 	}
+ 	s.le_held = false;
+ 	s.le_last_index = i;
+@@ -803,8 +829,10 @@
+ 	const dmr_burst_t *from = b;	// the burst whose LC starts the call
+ 
+ 	if (!b->lc_valid || !dmr_lc_is_voice(b->lc)) {
+-		if (!held)
++		if (!held) {
++			rx_no_lc(b, now, slot);
+ 			return;
++		}
+ 		from = &s.le_burst;
+ 	}
+ 	// The call a terminator just ended: its last voice bursts reported after the terminator (the modem's reports come
+--- a/core/dmr/call/dmr_call.h
++++ b/core/dmr/call/dmr_call.h
+@@ -50,6 +50,7 @@
+ } dmr_sfr_rx_t;
+ #define DMR_SFR_DUALPATH_MS		120	// a burst with a failed frame waits this long for the other copy (90 ms behind)
+ 
++#define DMR_CALL_NO_LC_RUN		6	// hear all: voice bursts in order with no LC that decodes (a RAS repeater) before they play as a call
+ #define DMR_CALL_OWN_ECHO_MS		700	// a call from our own ID this soon after we stopped transmitting is the repeater's echo of it; later, a parrot's playback
+ #define DMR_CALL_ALIGN_MS		300	// DMO: reply aligned to a station heard this recently (within the modem's slot memory, 390 ms on the HR_C6000)
+ #define DMR_CALL_TX_DONE_GUARD_MS	1500	// tx_done overdue after the last burst: force receive
+@@ -260,6 +261,7 @@
+ 	uint32_t rx_sfr_direct;		// SFR user, repeat only: bursts of the talker's own copy dropped
+ 	uint32_t rx_sfr_held;		// SFR user, dual-path RX: bursts held for the other copy (a frame's FEC failed)
+ 	uint32_t rx_sfr_fixed;		// ... frames taken from the other copy
++	uint32_t rx_no_lc_calls;	// rx_calls started with hear all from voice whose LC never decoded (a RAS repeater)
+ } dmr_call_stats_t;
+ void dmr_call_get_stats(dmr_call_stats_t *out);
+ // The talker alias our calls send now ("" = none: off for the channel, no callsign, or built without it)
+--- a/core/debuglink/debuglink_view_dmr.c
++++ b/core/debuglink/debuglink_view_dmr.c
+@@ -136,6 +136,8 @@
+ 			(unsigned)c.rx_lost_frames);
+ 		dl_text(t, "call.rx_dup_dropped=%u\ncall.rx_enc_dropped=%u\ncall.rx_term_dropped=%u\n",
+ 			(unsigned)c.rx_dup_dropped, (unsigned)c.rx_enc_dropped, (unsigned)c.rx_term_dropped);
++		// hear all: calls played from voice whose LC never decoded (a RAS repeater)
++		dl_text(t, "call.rx_no_lc_calls=%u\n", (unsigned)c.rx_no_lc_calls);
+ 		// SFR user: the other copy of a burst played, the talker's copy dropped, dual-path RX's held bursts and fixed frames
+ 		dl_text(t, "call.rx_sfr_dup=%u\ncall.rx_sfr_direct=%u\ncall.rx_sfr_held=%u\ncall.rx_sfr_fixed=%u\n",
+ 			(unsigned)c.rx_sfr_dup, (unsigned)c.rx_sfr_direct, (unsigned)c.rx_sfr_held, (unsigned)c.rx_sfr_fixed);
+--- a/tests/host/dmrCallTest.c
++++ b/tests/host/dmrCallTest.c
+@@ -1026,6 +1026,80 @@
+ 	rx_call(lc, 1, false, 4, 3, false, &frame);
+ 	dmr_call_get_stats(&st);
+ 	CHECK(st.rx_calls == 2 && st.rx_late_entries == 1 && sink_log.begins == 2);
++}
++
++// A repeater with restricted access (RAS): its key changes the header's RS parity and the embedded LC's checksum, so
++// the voice comes with no LC the stack can check. Without hear all nothing plays (the group can't be told); with hear
++// all (digital monitor) a whole superframe in order plays as an unknown group call, and an LC that decodes later
++// names it
++static void test_rx_ras_voice_without_lc(void)
++{
++	dmr_call_config_t c = base_cfg();
++	dmr_call_stats_t st;
++	unsigned frame = 1;
++
++	setup(&c);
++	dmr_call_reset_stats();
++	for (int sf = 0; sf < 2; sf++)
++		for (int i = 0; i < 6; i++) {
++			rx_voice((uint8_t)i, 1, 0, DMR_SYNC_MS, &frame, NULL, false);
++			run_ms(60);
++		}
++	dmr_call_get_stats(&st);
++	CHECK(st.rx_calls == 0 && sink_log.begins == 0 && sink_log.frames == 0);
++	run_ms(DMR_CALL_FADE_MS);
++
++	c.listen.hear_all = true;
++	setup(&c);
++	dmr_call_reset_stats();
++	for (int i = 0; i < 6; i++) {
++		CHECK(sink_log.begins == 0);	// not before a whole superframe in order
++		rx_voice((uint8_t)i, 1, 0, DMR_SYNC_MS, &frame, NULL, false);
++		run_ms(60);
++	}
++	dmr_call_get_stats(&st);
++	CHECK(st.rx_calls == 1 && st.rx_no_lc_calls == 1 && st.rx_calls_played == 1 && sink_log.begins == 1);
++	CHECK(V()->state == DMR_CALL_STATE_RX && V()->caller.src == 0 && V()->caller.group);
++	CHECK(sink_log.frames == 3);	// burst F, the sixth: from there on
++	for (int i = 0; i < 6; i++) {
++		rx_voice((uint8_t)i, 1, 0, DMR_SYNC_MS, &frame, NULL, false);
++		run_ms(60);
++	}
++	CHECK(sink_log.frames == 3 + 18 && sink_log.losts == 0);
++
++	// An LC that decodes (a key-less talker, or the LC with a good checksum) names the call
++	uint8_t lc[9];
++	mk_lc(lc, 0, TG_TALK, 2345678);
++	rx_voice(0, 1, 0, DMR_SYNC_MS, &frame, NULL, false);
++	run_ms(60);
++	rx_voice(1, 1, 0, DMR_SYNC_MS, &frame, lc, false);
++	run_ms(60);
++	CHECK(V()->caller.src == 2345678 && V()->caller.dst == TG_TALK);
++
++	// The voice stops: the call fades out as any other
++	run_ms(DMR_CALL_FADE_MS + 60);
++	CHECK(V()->state == DMR_CALL_STATE_IDLE && sink_log.ends >= 1);
++
++	// Out of order bursts (noise) never make the run; a burst with a bad EMB doesn't start it
++	dmr_call_reset_stats();
++	static const uint8_t order[] = { 0, 2, 3, 5, 1, 4, 0, 3 };
++	for (unsigned k = 0; k < sizeof order; k++) {
++		rx_voice(order[k], 1, 0, DMR_SYNC_MS, &frame, NULL, false);
++		run_ms(60);
++	}
++	dmr_call_get_stats(&st);
++	CHECK(st.rx_no_lc_calls == 0);
++
++	// Privacy (the PI bit in the EMB) is never played
++	run_ms(DMR_CALL_FADE_MS);
++	unsigned frames = sink_log.frames;
++	for (int i = 0; i < 12; i++) {
++		rx_voice((uint8_t)(i % 6), 1, 0, DMR_SYNC_MS, &frame, NULL, true);
++		run_ms(60);
++	}
++	CHECK(sink_log.frames == frames);
++	c.listen.hear_all = false;
++	setup(&c);
+ }
+ 
+ // A call heard as not ours, then the listen rules change with the RF the same (a scan stop on another channel of the
+@@ -2348,6 +2422,7 @@
+ 	test_rx_filters();
+ 	test_rx_recheck_on_configure();
+ 	test_rx_no_call_after_terminator();
++	test_rx_ras_voice_without_lc();
+ 	test_rx_group_callback();
+ 	test_rx_own_id_parrot();
+ 	test_late_entry();
+--- a/site/static/js/codeplug/stock_baofeng.js
++++ b/site/static/js/codeplug/stock_baofeng.js
+@@ -6,6 +6,7 @@
+ 
+ import { getFreq } from "./fields.js";
+ import { LIMITS, POWER_NAMES } from "./records.js";
++import { listenBand } from "./model.js";
+ 
+ export const DM32_STOCK = "baofeng-dm32";
+ 
+@@ -211,6 +212,11 @@
+ 	if (s.channelCount > CH_PER_BLOCK) note("too_many_channels", s.channelCount - CH_PER_BLOCK);
+ 	let stockChannels = s.channels.filter((c) => {
+ 		if (c.rxHz && c.txHz) return true;
++		// A receive-only channel (the air band) may have no TX frequency: TX on RX, RX only (listen bands below)
++		if (c.rxHz && listenBand(c.rxHz)) {
++			c.txHz = c.rxHz;
++			return true;
++		}
+ 		note("bad_frequency");
+ 		return false;
+ 	});
+@@ -260,6 +266,8 @@
+ 
+ 	const channelOf = new Map();
+ 	const channels = stockChannels.map((c, i) => {
++		// The air band and broadcast FM are received only, and in FM (AM there): a DMR channel there becomes one
++		if (listenBand(c.rxHz)) c.mode = "fm";
+ 		const dmr = c.mode === "dmr";
+ 		const tone = (t) => {
+ 			if (dmr) return "";
+@@ -270,7 +278,7 @@
+ 		const x = {
+ 			number: i + 1, name: shorten(c.name, LIMITS.name), rxHz: c.rxHz, txHz: c.txHz, mode: c.mode,
+ 			power: c.power, tot: 0, rxTone: tone(c.rxTone), txTone: tone(c.txTone),
+-			bw: dmr ? 12.5 : c.bw, rxOnly: false, allSkip: false, zoneSkip: false, vox: false, squelch: 0,
++			bw: dmr ? 12.5 : c.bw, rxOnly: !!listenBand(c.rxHz) || !!listenBand(c.txHz), allSkip: false, zoneSkip: false, vox: false, squelch: 0,
+ 			colorCode: dmr ? c.colorCode : 0, timeslot: dmr ? c.timeslot : 1,
+ 			contact: dmr ? contactOf.get(c.contact) || null : null, rxList: dmr ? listOf.get(c.rxList) || null : null,
+ 			aprs: null, dmrId: 0, noBeep: false, noEco: false, dmo: false, roam: false, aliasTs1: 0, aliasTs2: 0,
+--- a/site/tests/stock_baofeng.test.mjs
++++ b/site/tests/stock_baofeng.test.mjs
+@@ -207,6 +207,25 @@
+ 	assert.deepEqual([m.general.dmrId, m.general.radioName, m.general.bootLine1, m.general.bootLine2], [3100123, "N0CALL-7", "CALL", "Name"]);
+ });
+ 
++test("importStock: an air band channel, with or without a TX frequency, comes over RX only (it used to be dropped)", () => {
++	const f = sample();
++	f.channel(5, { name: "Tower", rx: 118100000, tx: 0 });
++	f.channel(6, { name: "ATIS", rx: 127850000 });
++	f.channel(7, { name: "Ground", rx: 121900000, dmr: true });
++	const m = empty();
++	const { counts, notes } = importStock(m, f.read());
++	assert.equal(counts.channels, 7);
++	assert.equal(notes.find((x) => x.code === "bad_frequency"), undefined);
++	assert.deepEqual(m.channels.slice(4).map((c) => [c.name, c.rxHz, c.txHz, c.rxOnly, c.mode]), [
++		["Tower", 118100000, 118100000, true, "fm"], ["ATIS", 127850000, 127850000, true, "fm"],
++		["Ground", 121900000, 121900000, true, "fm"]]);
++	assert.equal(m.channels[0].rxOnly, false);	// a two-way channel stays as it was
++	// a channel with no TX frequency outside the listen bands is still refused
++	const g = sample();
++	g.channel(5, { name: "Broken", rx: 146520000, tx: 0 });
++	assert.deepEqual(importStock(empty(), g.read()).notes.find((x) => x.code === "bad_frequency"), { code: "bad_frequency", n: 1 });
++});
++
+ test("importStock: a channel count past the first block is reported, the first block's channels kept", () => {
+ 	const f = sample();
+ 	put16(f.blk(0x12), 0, 100);
