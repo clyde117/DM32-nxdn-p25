@@ -27,7 +27,8 @@ void p25_voice_init(p25_voice *v, uint16_t nac, uint16_t group,
     v->sink = sink;
     v->sink_ctx = ctx;
     v->group_filter = group;
-    v->nac_filter = nac == 0xf7e ? P25_NAC_ANY : nac;
+    /* F7E hears every NAC; F7F (the repeater's any) is the same on receive */
+    v->nac_filter = (nac == 0xf7e || nac == 0xf7f) ? P25_NAC_ANY : nac;
     v->last_nac = P25_NAC_ANY;
     p25_rx_init(&v->framer, P25_NAC_ANY, 2);
     admission_reset(v);

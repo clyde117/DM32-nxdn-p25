@@ -83,6 +83,10 @@ static void short_call(void)
     reset(0xf7e, 42);
     feed(air, sizeof air);
     assert(blocks == 9 && loud); /* standard wildcard NAC */
+    reset(0xf7f, 42);
+    assert(v.nac_filter == P25_NAC_ANY); /* the repeater's wildcard hears every NAC as well */
+    feed(air, sizeof air);
+    assert(blocks == 9 && loud);
     reset(0x293, 42);
     feed(encrypted_hdu, sizeof encrypted_hdu);
     feed(air + 99, 216);

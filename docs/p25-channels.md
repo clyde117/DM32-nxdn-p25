@@ -15,7 +15,7 @@ Build switches: `CONFIG_P25=y CONFIG_P25_NATIVE=y` (the `native` preset of `tool
 |---|---|---|---|
 | Mode | P25 | mode byte 2 | Mode `P25` |
 | RX / TX frequency | the radio's bands | 0x10 / 0x14 | RX / TX Frequency (MHz) |
-| RX NAC | 000-FFF hex; `any` (F7E) hears every NAC | 0x20 | RX NAC |
+| RX NAC | 000-FFF hex; `any` (F7E, or F7F) hears every NAC | 0x20 | RX NAC |
 | TX NAC | 000-F7D hex | 0x22 | TX NAC |
 | Talkgroup | 1-65535: where PTT talks, and the group RX plays | 0x2E | Talkgroup |
 | Hear all groups | play every talkgroup (else ours and All Call FFFF) | 0x31 bit 6 | Hear All Groups |
@@ -28,7 +28,8 @@ of records they don't edit, but show mode 2 as an unknown mode.
 On the radio the channel editor cycles the mode FM, DMR, P25, edits the talkgroup and the unit ID (Own ID) and the
 NAC: OK on the NAC row, then the keys type up to 3 hex digits and the knob (or Up/Down) steps the last one through
 0-F for the letters the keypad doesn't have; OK sets the TX NAC (000-F7D), and RX with it unless RX hears every NAC.
-OK with nothing typed switches RX between our NAC and every NAC. A separate RX NAC is set in the editor or CSV.
+OK with nothing typed switches RX between our NAC and every NAC; F7E (or F7F) typed makes RX hear every NAC and keeps
+the TX NAC. A separate RX NAC is set in the editor or CSV.
 
 ## Receive
 

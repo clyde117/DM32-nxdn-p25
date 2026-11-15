@@ -22,13 +22,14 @@ The radio covers VHF and UHF. 800 MHz trunked systems are out of its band.
 
 ## Setting up channels
 
-Use the codeplug editor or a CSV file. The radio's menu also edits NAC, RAN, talkgroup and unit ID.
+Use the codeplug editor or a CSV file. The radio's menu also edits NAC, RAN, talkgroup and unit ID. On the NAC or RAN row, OK with nothing typed switches RX
+between the channel's own NAC/RAN and every NAC/RAN, keeping the TX one.
 
 | Field (CSV column) | P25 | NXDN | P25 trunk |
 |---|---|---|---|
 | RX / TX frequency | the channel (TX: the repeater input) | the channel | RX: the control channel. TX: its inbound frequency |
-| RX NAC / TX NAC | 000-FFF; RX `any` hears every NAC | - | RX NAC: the control channel's, or `any` |
-| RX RAN / TX RAN | - | 0-63; RX 0 hears every RAN | - |
+| RX NAC / TX NAC | 000-FFF; RX `any` (F7E or F7F) hears every NAC | - | RX NAC: the control channel's, or `any` |
+| RX RAN / TX RAN | - | 0-63; RX 0 (or `any`) hears every RAN | - |
 | Talkgroup | 1-65535: where PTT talks, and what plays | 1-65519 | 1-65535: affiliated to, PTT talks to it |
 | Hear All Groups | play every talkgroup | play every group | follow every group call on the system |
 | WACN | - | - | 5 hex digits, from the system's administrator |

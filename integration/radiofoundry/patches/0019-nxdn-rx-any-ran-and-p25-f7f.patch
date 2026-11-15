@@ -1,0 +1,203 @@
+--- a/core/ui/ui_menus.c
++++ b/core/ui/ui_menus.c
+@@ -2043,16 +2043,18 @@
+ 		break;
+ 	case CE_NAC: {
+ 		if (ch->mode == RADIO_MODE_NXDN) {
+-			// The RAN, typed 0-63 (RX and TX alike; RX 0 hears every RAN). Separate values from the editor or CSV
++			// The TX RAN, typed 0-63, and RX: the same one or every RAN (RX RAN 0; OK with nothing typed switches
++			// them, as a P25 channel's RX NAC)
+ 			sb_str(&b, "RAN ");
+ 			sb_u32(&b, ch->nac_tx, 1);
+-			if (ch->nac_rx == 0 && ch->nac_tx != 0)
++			if (ch->nac_rx == 0)
+ 				sb_str(&b, TR(", RX any"));
+ 			else if (ch->nac_rx != ch->nac_tx)
+ 				sb_str(&b, TR(", RX other"));
+ 			break;
+ 		}
+-		// The TX NAC in hex, typed (ced_digit), and RX: the same one or every NAC (OK with nothing typed switches them)
++		// The TX NAC in hex, typed (ced_digit), and RX: the same one or every NAC (OK with nothing typed switches them,
++		// or F7E / F7F typed)
+ 		static const char hex[] = "0123456789ABCDEF";
+ 		for (int s = 8; s >= 0; s -= 4)
+ 			sb_chr(&b, hex[(ch->nac_tx >> s) & 0xFu]);
+@@ -2416,11 +2418,20 @@
+ 		break;
+ 	case CE_NAC:
+ 		if (c->mode == RADIO_MODE_NXDN) {
+-			if (ced_len > 0)
+-				c->nac_rx = c->nac_tx = (uint16_t)ced_val;	// an NXDN channel's RAN
++			// An NXDN channel's RAN. RX RAN 0 hears every RAN: OK with nothing typed switches RX between that and the
++			// TX RAN, and a typed TX RAN leaves RX hearing every RAN when it did
++			if (ced_len == 0)
++				c->nac_rx = c->nac_rx == 0 && c->nac_tx != 0 ? c->nac_tx : 0;
++			else {
++				if (c->nac_rx != 0)
++					c->nac_rx = (uint16_t)ced_val;
++				c->nac_tx = (uint16_t)ced_val;
++			}
+ 		} else if (ced_len == 0) {
+ 			c->nac_rx = c->nac_rx == CODEPLUG_NAC_ANY ? c->nac_tx : CODEPLUG_NAC_ANY;	// RX: every NAC, or the TX one
+-		} else if (ced_val >= (int32_t)CODEPLUG_NAC_ANY) {
++		} else if (ced_val == (int32_t)CODEPLUG_NAC_ANY || ced_val == (int32_t)CODEPLUG_NAC_ANY + 1) {
++			c->nac_rx = CODEPLUG_NAC_ANY;	// F7E (and F7F, the repeater's "any"): RX hears every NAC, TX is kept
++		} else if (ced_val > (int32_t)CODEPLUG_NAC_ANY) {
+ 			ui_toast(TR("NAC goes 000 to F7D"));
+ 			return;
+ 		} else {
+@@ -2542,7 +2553,9 @@
+ 		if (c->mode == RADIO_MODE_NXDN) {
+ 			if (c->nac_tx > 63)
+ 				c->nac_tx = 1;		// a NAC left from P25: RAN 1
+-			if (c->nac_rx > 63)
++			if (c->nac_rx == CODEPLUG_NAC_ANY)
++				c->nac_rx = 0;		// P25's every NAC: every RAN
++			else if (c->nac_rx > 63)
+ 				c->nac_rx = c->nac_tx;
+ 			if (c->talkgroup == 0)
+ 				c->talkgroup = 1;
+@@ -2559,7 +2572,7 @@
+ 		}
+ 		ced_build();
+ 		break;
+-	case CE_NAC:		// typed: a P25 NAC in hex (OK alone switches RX any), an NXDN RAN
++	case CE_NAC:		// typed: a P25 NAC in hex, an NXDN RAN (OK alone switches RX any)
+ 	case CE_TG:
+ 	case CE_RX:
+ 	case CE_TX:
+--- a/core/ui/ui_screens.c
++++ b/core/ui/ui_screens.c
+@@ -324,6 +324,13 @@
+ 	sb_str(&b, v->ch.mode == RADIO_MODE_NXDN ? "RAN " : "NAC ");
+ 	if (v->ch.mode == RADIO_MODE_NXDN) {
+ 		sb_u32(&b, v->ch.nac_tx, 1);
++		if (v->ch.nac_rx != v->ch.nac_tx) {
++			sb_chr(&b, '/');
++			if (v->ch.nac_rx == 0)
++				sb_str(&b, TR("any"));	// RX RAN 0 hears every RAN
++			else
++				sb_u32(&b, v->ch.nac_rx, 1);
++		}
+ 	} else {
+ 		sb_nac(&b, v->ch.nac_tx);
+ 		if (v->ch.nac_rx != v->ch.nac_tx) {
+--- a/tests/host/uiFlowTest.c
++++ b/tests/host/uiFlowTest.c
+@@ -328,6 +328,25 @@
+ 	{ "E P25 NAC: OK alone switches RX any", CE_P25_NAC, "ok ok", "shows=RX_any", 2, false },
+ 	{ "E P25 NAC: a TX NAC change with RX any saves", CE_P25_NAC " ok ok long:ok", "ok 4 5 6 ok long:ok",
+ 	  "toast=Saved_channel shows=456 shows=RX_any writes=2", 6, true },
++	{ "E P25 NAC: F7E typed is RX any, TX kept", CE_P25_NAC, "ok 4 5 6 ok ok 0 down 7 0 down down ok",
++	  "shows=456 shows=RX_any", 13, false },
++	{ "E P25 NAC: F7F typed is RX any too", CE_P25_NAC, "ok 0 down 7 0 down ok", "shows=RX_any", 7, false },
++#endif
++#if CONFIG_NXDN
++	// An NXDN channel's RAN: channel 3 made NXDN (Mode OK past P25, or DMR without it). Typed 0-63; RX RAN 0 hears every
++	// RAN, and OK alone switches RX between that and the TX RAN, as a P25 channel's RX NAC
++#if CONFIG_P25 && CONFIG_P25_NATIVE
++#define CE_NXDN_RAN	"ok 5 ok down down ok ok down down down down down"
++#else
++#define CE_NXDN_RAN	"ok 5 ok down down ok down down down down down"
++#endif
++	{ "E NXDN RAN typed", CE_NXDN_RAN, "ok 1 2 ok", "shows=RAN_12 hides=RX_any", 4, false },
++	{ "E NXDN RAN past 63 is refused", CE_NXDN_RAN, "ok 6 4", "toast=RAN_goes", 3, false },
++	{ "E NXDN RAN: OK alone switches RX any", CE_NXDN_RAN, "ok 7 ok ok ok", "shows=RAN_7 shows=RX_any", 5, false },
++	{ "E NXDN RAN: OK alone again hears the TX RAN only", CE_NXDN_RAN, "ok 7 ok ok ok ok ok", "shows=RAN_7 hides=RX_any",
++	  7, false },
++	{ "E NXDN RAN: a TX RAN change with RX any keeps RX any, and saves", CE_NXDN_RAN " ok 7 ok ok ok",
++	  "ok 9 ok long:ok", "toast=Saved_channel shows=RAN_9 shows=RX_any writes=1", 4, true },
+ #endif
+ 	{ "E time-out in steps of 15", "ok 5 ok down down down down down down down down down down down down down down down "
+ 	  "down", "ok 7 ok", "toast=Not_changed", 3, false },
+--- a/site/static/js/editor/views.js
++++ b/site/static/js/editor/views.js
+@@ -92,9 +92,17 @@
+ 	if (n > max) return t(err);
+ 	r[k] = n;
+ };
++// RX takes "any": every NAC (F7E; F7F, the repeater's any, is the same on receive) or every RAN (RX RAN 0)
+ const nac = (any) => (t) => (r, k, v) => {
+-	if (r.mode === "nxdn") return int(0, 63)(t)(r, k, v);
++	if (r.mode === "nxdn") {
++		if (any && /^any$/i.test(String(v ?? "").trim())) {
++			r[k] = 0;
++			return;
++		}
++		return int(0, 63)(t)(r, k, v);
++	}
+ 	const err = hexField(any ? 0xFFF : 0xF7D, any, "editor.err.nac")(t)(r, k, v);
++	if (!err && any && r[k] === 0xF7F) r[k] = NAC_ANY;
+ 	return err;
+ };
+ const nacFormat = (v, r) => (r.mode === "nxdn" ? String(v) : nacText(v));
+--- a/site/static/js/codeplug/csv.js
++++ b/site/static/js/codeplug/csv.js
+@@ -350,13 +350,16 @@
+ 			c("SFR", "sfr", asBool, (r) => yesNo(r.sfr)),
+ 			c("SFR A", "sfrA", asInt(0, 255, 0)),
+ 			c("SFR B", "sfrB", asInt(0, 255, 0)),
+-			keep("RX NAC", "nacRx", asHex(0xFFF, true), (r) => (isP25(r) ? (r.nacRx === NAC_ANY ? "any" : hex(3)(r.nacRx)) : ""), ["NAC RX"]),
++			keep("RX NAC", "nacRx", (s) => {
++				const n = asHex(0xFFF, true)(s);
++				return n === 0xF7F ? NAC_ANY : n;	// the repeater's any: on receive, every NAC as F7E
++			}, (r) => (isP25(r) ? (r.nacRx === NAC_ANY ? "any" : hex(3)(r.nacRx)) : ""), ["NAC RX"]),
+ 			keep("TX NAC", "nacTx", (s) => {
+ 				const n = asHex(0xFFF, false)(s);
+ 				if (n >= NAC_ANY) throw new Bad("range", { min: 0, max: "F7D" });
+ 				return n;
+ 			}, (r) => (isP25(r) ? hex(3)(r.nacTx) : ""), ["NAC TX", "NAC"]),
+-			keep("RX RAN", "nacRx", asInt(0, 63), (r) => (r.mode === "nxdn" ? r.nacRx : ""), ["RAN RX"]),
++			keep("RX RAN", "nacRx", (s) => (/^any$/i.test(s.trim()) ? 0 : asInt(0, 63)(s)), (r) => (r.mode === "nxdn" ? r.nacRx : ""), ["RAN RX"]),
+ 			keep("TX RAN", "nacTx", asInt(0, 63), (r) => (r.mode === "nxdn" ? r.nacTx : ""), ["RAN TX", "RAN"]),
+ 			keep("Talkgroup", "talkgroup", asInt(1, 65535), (r) => (DIGITAL.has(r.mode) ? r.talkgroup || "" : ""), ["TG", "Group ID", "TGID"]),
+ 			keep("Hear All Groups", "hearAll", asBool, (r) => (DIGITAL.has(r.mode) ? yesNo(r.hearAll) : ""), ["Hear All", "Monitor All"]),
+--- a/site/tests/editor.test.mjs
++++ b/site/tests/editor.test.mjs
+@@ -102,6 +102,32 @@
+ 	}
+ });
+ 
++test("RX any on one channel: every RAN (RX RAN 0) on NXDN, every NAC (F7E, or F7F) on P25; TX keeps its own", () => {
++	const table = columns("channels", empty(), t);
++	const form = channelForm(empty(), t);
++	const cell = (key) => (r, k, v) => table.find((c) => c.key === key).set(r, v);
++	const parsers = [cell("nacRx"),
++		...form.filter((f) => f.key === "nacRx").map((f) => f.parse)];
++	for (const parse of parsers) {
++		const nx = { mode: "nxdn", nacRx: 5, nacTx: 5 };
++		for (const v of ["0", "any", " ANY "]) {
++			nx.nacRx = 5;
++			assert.equal(parse(nx, "nacRx", v), undefined, v);
++			assert.deepEqual([nx.nacRx, nx.nacTx], [0, 5], v);
++		}
++		assert.equal(parse(nx, "nacRx", "64"), "editor.err.range");
++		const p = { mode: "p25", nacRx: 0x293, nacTx: 0x293 };
++		for (const v of ["any", "F7E", "f7f"]) {
++			p.nacRx = 0x293;
++			assert.equal(parse(p, "nacRx", v), undefined, v);
++			assert.deepEqual([p.nacRx, p.nacTx], [0xF7E, 0x293], v);
++		}
++	}
++	// TX: neither takes any
++	const tx = { mode: "nxdn", nacRx: 0, nacTx: 5 };
++	assert.equal(cell("nacTx")(tx, "nacTx", "any"), "editor.err.range");
++});
++
+ test("Bulk Edit sets no names or numbers, and has nothing to set on zones and RX lists", () => {
+ 	const keys = (table) => bulkColumns(table, empty(), t).map((c) => c.key);
+ 	assert.deepEqual([keys("zones"), keys("rxLists")], [[], []]);
+--- a/site/tests/csv.test.mjs
++++ b/site/tests/csv.test.mjs
+@@ -219,4 +219,10 @@
+ 	const bad = importTable(empty(), "Name,Mode,RX Frequency (MHz),TX NAC\nX,P25,155.475,F7E\n");
+ 	assert.equal(bad.problems.length, 1);
+ 	assert.equal(bad.problems[0].code, "range");
+-});
++	// RX "any" on a single channel: every RAN (RX RAN 0) and every NAC (F7E; F7F, the repeater's any, reads as F7E)
++	const any = empty();
++	const ok = importTable(any, "Name,Mode,RX Frequency (MHz),RX RAN,TX RAN,RX NAC\nN,NXDN,155.475,any,5,\nP,P25,155.475,,,F7F\n");
++	assert.deepEqual(ok.problems, []);
++	assert.deepEqual([any.channels[0].nacRx, any.channels[0].nacTx], [0, 5]);
++	assert.equal(any.channels[1].nacRx, 0xF7E);
++});

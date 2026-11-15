@@ -17,7 +17,7 @@ Build switch: `CONFIG_NXDN=y` (on in `tools/build_radiofoundry.py`'s presets; `-
 |---|---|---|---|
 | Mode | NXDN | mode byte 3 | Mode `NXDN` |
 | RX / TX frequency | the radio's bands | 0x10 / 0x14 | RX / TX Frequency (MHz) |
-| RX RAN | 0-63; 0 hears every RAN | 0x20 | RX RAN |
+| RX RAN | 0-63; 0 (`any` in the editor or CSV) hears every RAN | 0x20 | RX RAN |
 | TX RAN | 0-63 | 0x22 | TX RAN |
 | Group | 1-65535 (65535 the all call): where PTT talks, and the group RX plays | 0x2E | Talkgroup |
 | Hear all groups | play every group (else ours and the all call) | 0x31 bit 6 | Hear All Groups |
@@ -25,8 +25,10 @@ Build switch: `CONFIG_NXDN=y` (on in `tools/build_radiofoundry.py`'s presets; `-
 | Power, time-out, RX only, scan skip | as FM/DMR | as FM/DMR | as FM/DMR |
 
 On the radio the channel editor cycles the mode FM, DMR, P25, NXDN (each where the build has it). For NXDN the RAN
-row is typed (0-63, RX and TX alike), the group and the unit ID as P25's talkgroup and ID. Separate RX and TX RANs
-come from the editor or CSV.
+row is typed (0-63): it sets the TX RAN, and RX with it unless RX hears every RAN. OK with nothing typed switches RX
+between our RAN and every RAN (RX RAN 0), as a P25 channel's RX NAC; the row then reads `RAN n, RX any` and the home
+screen `RAN n/any`. The group and the unit ID are typed as P25's talkgroup and ID. Other separate RX and TX RANs come
+from the editor or CSV.
 
 ## Receive
 
