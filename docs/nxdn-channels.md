@@ -24,7 +24,9 @@ Build switch: `CONFIG_NXDN=y` (on in `tools/build_radiofoundry.py`'s presets; `-
 | Unit ID | 1-65519; blank uses the radio's DMR ID, which must then be 65519 or less | 0x27-0x29 | DMR ID (alias Unit ID) |
 | Power, time-out, RX only, scan skip | as FM/DMR | as FM/DMR | as FM/DMR |
 
-On the radio the channel editor cycles the mode FM, DMR, P25, NXDN (each where the build has it). For NXDN the RAN
+On the radio the channel editor cycles the mode FM, DMR, P25, NXDN (each where the build has it). Digital monitor, as on DMR (a short press of the monitor
+key, until another press, Back or a channel change), hears every RAN and group for now without editing the channel;
+TX keeps the channel's RAN. For NXDN the RAN
 row is typed (0-63): it sets the TX RAN, and RX with it unless RX hears every RAN. OK with nothing typed switches RX
 between our RAN and every RAN (RX RAN 0), as a P25 channel's RX NAC; the row then reads `RAN n, RX any` and the home
 screen `RAN n/any`. The group and the unit ID are typed as P25's talkgroup and ID. Other separate RX and TX RANs come

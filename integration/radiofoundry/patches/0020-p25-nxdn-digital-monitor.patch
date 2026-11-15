@@ -1,0 +1,200 @@
+--- a/core/radio/radio_sm.c
++++ b/core/radio/radio_sm.c
+@@ -849,11 +849,24 @@
+ static void dv_begin(radio_sm_t *sm)
+ {
+ 	const channel_t *ch = &sm->view.ch;
++	if (sm->hear_all_latch && (sm->latch_vfo != sm->view.vfo || sm->latch_ch != sm->view.channel_number)) {
++		sm->hear_all_latch = false;	// digital monitor lasts as long as its channel, as on DMR
++		sm->view.dmr.hear_all_latch = false;
++	}
+ 	radio_dv_cfg_t c = {
+ 		.mode = ch->mode, .rx_hz = ch->rx_hz, .tx_hz = ch->tx_hz, .power = sm->view.power,
+ 		.nac_rx = ch->nac_rx, .nac_tx = ch->nac_tx, .talkgroup = ch->talkgroup, .unit_id = dv_unit_id(ch),
+ 		.hear_all = ch->hear_all, .wacn = ch->wacn, .sysid = ch->sysid,
+ 	};
++	if (sm->hear_all_latch) {
++		// Digital monitor (the monitor key's press, as on DMR): every group, and on a conventional channel every NAC
++		// (P25) or RAN (NXDN RX RAN 0). TX keeps the channel's NAC / RAN and group; a trunk keeps its system's NAC
++		c.hear_all = true;
++		if (ch->mode == RADIO_MODE_P25)
++			c.nac_rx = RADIO_DV_NAC_ANY;
++		else if (ch->mode == RADIO_MODE_NXDN)
++			c.nac_rx = 0;
++	}
+ 	sm->dv_running = radio_dv_select(&c);
+ 	memset(&sm->view.dv, 0, sizeof(sm->view.dv));
+ 	sm->view.dv.active = sm->dv_running;
+@@ -1416,6 +1429,17 @@
+ 	changed(sm);
+ }
+ 
++// A digital voice channel whose session runs: the monitor key toggles digital monitor there too
++static bool dv_monitor(const radio_sm_t *sm)
++{
++#if RADIO_SM_DV
++	return sm->dv_running && codeplug_mode_digital_voice(sm->view.ch.mode);
++#else
++	(void)sm;
++	return false;
++#endif
++}
++
+ // Digital monitor (the hear all latch: every talkgroup on the slot and color code) on or off, for this channel
+ // (RREQ_DMR_HEAR_ALL, and the monitor key's press on DMR)
+ static void set_hear_all_latch(radio_sm_t *sm, bool on)
+@@ -1427,6 +1451,12 @@
+ 	sm->latch_ch = sm->view.channel_number;
+ 	sm->latch_vfo = sm->view.vfo;
+ 	sm->view.dmr.hear_all_latch = on;
++#if RADIO_SM_DV
++	if (sm->dv_running) {
++		dv_begin(sm);	// P25 / NXDN: the receiver starts over with every NAC / RAN and group, or the channel's
++		outputs(sm);
++	}
++#endif
+ 	dmr_reconfigure(sm);
+ }
+ 
+@@ -5356,8 +5386,9 @@
+ 		// arg 1 down, 0 up, 2 up after the key's hold function ran. DMR: a short press toggles digital monitor (the
+ 		// hear all latch) on its release, so a hold can do something else (#19); FM: the squelch is open while
+ 		// the key is held. A key held across a change to DMR is still released here
+-		if (sm->view.ch.mode == RADIO_MODE_DMR && !sm->view.monitor) {
+-			if (req->arg == 0) {
++		// P25 and NXDN (and a P25 trunk's groups) the same: digital monitor, not the FM squelch they don't have
++		if ((sm->view.ch.mode == RADIO_MODE_DMR || dv_monitor(sm)) && !sm->view.monitor) {
++			if (req->arg == 0 && sm->view.state != RS_TX) {
+ 				set_hear_all_latch(sm, !sm->hear_all_latch);
+ 			}
+ 			break;
+--- a/core/ui/ui_app.c
++++ b/core/ui/ui_app.c
+@@ -1921,12 +1921,13 @@
+ 			TR("PTT is off while locked: hold Back to unlock"));
+ 		return;
+ 	}
+-	// The monitor key on DMR: a short press toggles digital monitor (the radio core does it on the release; the
+-	// view follows). Its hold function (value 1 on the long press) runs on DMR only: on FM holding the key is the
++	// The monitor key on DMR, P25 and NXDN: a short press toggles digital monitor (the radio core does it on the
++	// release; the view follows). Its hold function (value 1 on the long press) runs on DMR only: on FM holding the key is the
+ 	// squelch break (#19)
+ #if CONFIG_DMR
+ 	if (ev->action == ACT_MONITOR && ev->gesture == GESTURE_UP && ev->value == 0 &&
+-	    view->ch.mode == RADIO_MODE_DMR && !view->monitor)
++	    (view->ch.mode == RADIO_MODE_DMR || (codeplug_mode_digital_voice(view->ch.mode) && view->dv.active)) &&
++	    !view->monitor && view->state != RS_TX)
+ 		ui_toast(dmon_text(!view->dmr.hear_all_latch));
+ #endif
+ 	if (ev->gesture == GESTURE_LONG && ev->value != 0 && view->ch.mode != RADIO_MODE_DMR)
+--- a/core/ui/ui_screens.c
++++ b/core/ui/ui_screens.c
+@@ -343,6 +343,10 @@
+ 	}
+ 	x = gfx_text(f, x, y, buf, ui_col.fg) + f->w;
+ 	x = gfx_text(f, x, y, ui_power_name(v->power), ui_col.fg) + f->w;
++	// Digital monitor (the monitor key, as on DMR): every NAC / RAN and group. Before the ID, which yields when narrow
++	const char *dmon = TR("DMon");
++	if (v->dmr.hear_all_latch && x + gfx_text_width(f, dmon) <= w)
++		x = gfx_text(f, x, y, dmon, ui_col.warn) + f->w;
+ 	sb_init(&b, buf, sizeof buf);
+ 	sb_str(&b, "ID ");
+ 	sb_u32(&b, v->dv.source != 0 && v->state == RS_TX ? v->dv.source : v->ch.dmr_id, 1);
+@@ -1755,6 +1759,8 @@
+ 			return TR("Digital monitor  Back off");
+ 	}
+ #endif
++	if (dv_channel(v) && v->dmr.hear_all_latch)
++		return TR("Digital monitor  Back off");
+ 	if (v->temporary)
+ 		return TR("Back undo  Hold OK save");
+ #if CONFIG_DMR
+--- a/tests/host/radioCoreTest.c
++++ b/tests/host/radioCoreTest.c
+@@ -5031,10 +5031,86 @@
+ #endif
+ #endif
+ 
++#if RADIO_SM_DV && CONFIG_DMR && CONFIG_P25 && CONFIG_P25_NATIVE && CONFIG_NXDN
++// Digital monitor on P25 and NXDN, as on DMR: a short press of MONITOR latches every NAC (RAN) and group for this
++// channel; TX keeps the channel's NAC (RAN) and group. Another press, Back (RREQ_DMR_HEAR_ALL off) or another channel
++// ends it (issue #2: a channel that hears every RAN without editing it)
++static void test_dv_monitor(void)
++{
++	setup_codeplug();
++	add(3, "P25 Ops", 155475000, RADIO_MODE_P25, false, 1);
++	chans[3].nac_rx = chans[3].nac_tx = 0x293;
++	chans[3].talkgroup = 100;
++	add(4, "NXDN Ops", 451125000, RADIO_MODE_NXDN, false, 1);
++	chans[4].nac_rx = chans[4].nac_tx = 12;
++	chans[4].talkgroup = 200;
++	start();
++	memset(&dv, 0, sizeof(dv));
++	req(RREQ_ZONE_POS, 2);
++	run(30);
++	CHECK(sm.view.ch.mode == RADIO_MODE_P25 && dv.cfg.nac_rx == 0x293 && !dv.cfg.hear_all);
++	req(RREQ_MONITOR, 1);
++	CHECK(!sm.view.dmr.hear_all_latch && !sm.view.monitor);	// on the release, not the press
++	req(RREQ_MONITOR, 0);
++	run(10);
++	CHECK(sm.view.dmr.hear_all_latch && !sm.view.monitor && sm.dv_running);
++	CHECK(dv.cfg.nac_rx == RADIO_DV_NAC_ANY && dv.cfg.hear_all);
++	CHECK(dv.cfg.nac_tx == 0x293 && dv.cfg.talkgroup == 100);	// TX as the channel says
++	CHECK(chans[3].nac_rx == 0x293 && sm.view.ch.nac_rx == 0x293);	// the channel itself is unchanged
++	req(RREQ_MONITOR, 1);
++	req(RREQ_MONITOR, 0);
++	run(10);
++	CHECK(!sm.view.dmr.hear_all_latch && dv.cfg.nac_rx == 0x293 && !dv.cfg.hear_all);
++
++	// Back (the UI's hear all off) ends it too; a press while transmitting changes nothing
++	req(RREQ_MONITOR, 1);
++	req(RREQ_MONITOR, 0);
++	run(10);
++	CHECK(sm.view.dmr.hear_all_latch);
++	req(RREQ_DMR_HEAR_ALL, 0);
++	run(10);
++	CHECK(!sm.view.dmr.hear_all_latch && dv.cfg.nac_rx == 0x293);
++	uint32_t id = own_dmr_id;
++	own_dmr_id = 4001;
++	dv_ptt();
++	CHECK(sm.view.state == RS_TX);
++	int selects = dv.selects;
++	req(RREQ_MONITOR, 1);
++	req(RREQ_MONITOR, 0);
++	CHECK(!sm.view.dmr.hear_all_latch && dv.selects == selects);
++	req(RREQ_PTT, 0);
++	dv_tx_ended(NT_TX_COMPLETE_);
++	run(20);
++	CHECK(sm.view.state == RS_IDLE);
++
++	// It lasts as long as its channel; on NXDN it hears every RAN (RX RAN 0), TX keeps RAN 12
++	req(RREQ_MONITOR, 1);
++	req(RREQ_MONITOR, 0);
++	run(10);
++	CHECK(sm.view.dmr.hear_all_latch);
++	req(RREQ_ZONE_POS, 3);
++	run(30);
++	CHECK(sm.view.ch.mode == RADIO_MODE_NXDN && !sm.view.dmr.hear_all_latch);
++	CHECK(dv.cfg.nac_rx == 12 && !dv.cfg.hear_all);
++	req(RREQ_MONITOR, 1);
++	req(RREQ_MONITOR, 0);
++	run(10);
++	CHECK(sm.view.dmr.hear_all_latch && dv.cfg.nac_rx == 0 && dv.cfg.hear_all);
++	CHECK(dv.cfg.nac_tx == 12 && dv.cfg.talkgroup == 200);
++	req(RREQ_ZONE_POS, 2);
++	run(30);
++	CHECK(!sm.view.dmr.hear_all_latch && dv.cfg.nac_rx == 0x293);
++	own_dmr_id = id;
++}
++#endif
++
+ int main(void)
+ {
+ #if RADIO_SM_DV && CONFIG_P25 && CONFIG_P25_NATIVE
+ 	test_p25_channel();
++#endif
++#if RADIO_SM_DV && CONFIG_DMR && CONFIG_P25 && CONFIG_P25_NATIVE && CONFIG_NXDN
++	test_dv_monitor();
+ #endif
+ #if RADIO_SM_DV && CONFIG_NXDN
+ 	test_nxdn_channel();

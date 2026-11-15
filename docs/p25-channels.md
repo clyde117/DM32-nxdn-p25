@@ -28,6 +28,8 @@ of records they don't edit, but show mode 2 as an unknown mode.
 On the radio the channel editor cycles the mode FM, DMR, P25, edits the talkgroup and the unit ID (Own ID) and the
 NAC: OK on the NAC row, then the keys type up to 3 hex digits and the knob (or Up/Down) steps the last one through
 0-F for the letters the keypad doesn't have; OK sets the TX NAC (000-F7D), and RX with it unless RX hears every NAC.
+Digital monitor, as on DMR (a short press of the monitor key, until another press, Back or a channel change), hears
+every NAC and talkgroup for now without editing the channel; TX keeps the channel's NAC. On the channel editor,
 OK with nothing typed switches RX between our NAC and every NAC; F7E (or F7F) typed makes RX hear every NAC and keeps
 the TX NAC. A separate RX NAC is set in the editor or CSV.
 

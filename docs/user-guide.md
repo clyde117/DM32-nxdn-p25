@@ -62,6 +62,11 @@ The screen shows:
 
 Calls on another talkgroup, NAC or RAN, or encrypted calls, show but do not play.
 
+**Digital monitor**, as on DMR: a short press of the monitor key (SK1) plays every talkgroup and every NAC (P25) or
+RAN (NXDN) on this channel; the status row shows `DMon` and a toast confirms it. Another press, Back or a change of
+channel ends it. PTT still talks with the channel's own NAC/RAN and talkgroup, and the channel is not changed. On a P25
+trunk channel it plays every group of the system.
+
 On P25, the speaker is muted between calls, including after power-on and after releasing PTT. A continuous hiss
 after the hotspot has returned to standby is not an expected transmit tail.
 
