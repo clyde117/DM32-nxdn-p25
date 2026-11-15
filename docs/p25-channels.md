@@ -25,9 +25,10 @@ Build switches: `CONFIG_P25=y CONFIG_P25_NATIVE=y` (the `native` preset of `tool
 A blank tone word from an FM CPS reads as RX NAC `any` and TX NAC 293. qdmr and the open-firmware CPS keep the bytes
 of records they don't edit, but show mode 2 as an unknown mode.
 
-On the radio the channel editor cycles the mode FM, DMR, P25, edits the talkgroup and the unit ID (Own ID) and
-switches RX between our NAC and every NAC. The NAC values themselves are set in the editor or CSV (hex needs
-letters the keypad doesn't have).
+On the radio the channel editor cycles the mode FM, DMR, P25, edits the talkgroup and the unit ID (Own ID) and the
+NAC: OK on the NAC row, then the keys type up to 3 hex digits and the knob (or Up/Down) steps the last one through
+0-F for the letters the keypad doesn't have; OK sets the TX NAC (000-F7D), and RX with it unless RX hears every NAC.
+OK with nothing typed switches RX between our NAC and every NAC. A separate RX NAC is set in the editor or CSV.
 
 ## Receive
 

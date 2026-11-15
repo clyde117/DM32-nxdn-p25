@@ -1,0 +1,57 @@
+--- a/site/static/js/editor/views.js
++++ b/site/static/js/editor/views.js
+@@ -73,6 +73,8 @@
+ 		r.nacRx = NAC_ANY;
+ 		r.nacTx = NAC_DEFAULT;
+ 	}
++	// the digital voice modes need a talkgroup (1-65535) or the form won't save: talkgroup 1, as the radio's own switch
++	if (DIGITAL.has(v) && !r.talkgroup) r.talkgroup = 1;
+ 	r[k] = v;
+ };
+ 
+@@ -402,8 +404,6 @@
+ 	}
+ 	const byKey = (k) => rows.find((r) => r.f.key === k);
+ 	const value = (k) => byKey(k).input.value;
+-	// keys two fields share (P25 NAC and NXDN RAN): the one that appears shows the record's value as the mode left it
+-	const shared = new Set(rows.map((r) => r.f.key).filter((k, i, all) => k && all.indexOf(k) !== i));
+ 	const sync = () => {
+ 		for (const { f, input, row, label, tools } of rows) {
+ 			if (f.type === "pair") {
+@@ -431,7 +431,8 @@
+ 			if (f.type === "bool") (f.set ? f.set(work, input.checked) : (work[f.key] = input.checked));
+ 			if (f.show) {
+ 				const hide = !f.show(work);
+-				if (row.hidden && !hide && shared.has(f.key)) input.value = f.format ? f.format(work[f.key]) : work[f.key];
++				// a field that appears shows the record's value as the mode left it (setMode: NAC / RAN, talkgroup)
++				if (row.hidden && !hide && f.type === "text") input.value = f.format ? f.format(work[f.key] ?? "") : work[f.key] ?? "";
+ 				row.hidden = hide;
+ 			}
+ 			if (typeof f.label === "function") label.textContent = f.label(work);
+--- a/site/tests/editor.test.mjs
++++ b/site/tests/editor.test.mjs
+@@ -84,6 +84,24 @@
+ 	}
+ });
+ 
++test("a channel moved into P25, NXDN or trunking gets talkgroup 1 when it has none, so its form saves", () => {
++	const table = columns("channels", empty(), t).find((c) => c.key === "mode");
++	const form = field("mode");
++	for (const set of [(r, v) => table.set(r, v), (r, v) => form.set(r, v)]) {
++		for (const mode of ["p25", "nxdn", "p25trunk"]) {
++			const r = { mode: "fm", talkgroup: 0, nacRx: 0x293, nacTx: 0x293 };
++			set(r, mode);
++			assert.equal(r.talkgroup, 1);
++		}
++		const kept = { mode: "dmr", talkgroup: 9, nacRx: 0x293, nacTx: 0x293 };
++		set(kept, "p25");
++		assert.equal(kept.talkgroup, 9);	// a talkgroup already set is kept
++		const fm = { mode: "dmr", talkgroup: 0 };
++		set(fm, "fm");
++		assert.equal(fm.talkgroup, 0);	// FM doesn't use one
++	}
++});
++
+ test("Bulk Edit sets no names or numbers, and has nothing to set on zones and RX lists", () => {
+ 	const keys = (table) => bulkColumns(table, empty(), t).map((c) => c.key);
+ 	assert.deepEqual([keys("zones"), keys("rxLists")], [[], []]);

@@ -1,0 +1,202 @@
+--- a/core/ui/ui_menus.c
++++ b/core/ui/ui_menus.c
+@@ -1774,7 +1774,8 @@
+ 	[CE_NAME] = CE_FIELD(name), [CE_MODE] = CE_FIELD(mode), [CE_RX] = CE_FIELD(rx_hz), [CE_TX] = CE_FIELD(tx_hz),
+ 	[CE_POWER] = CE_FIELD(power), [CE_RX_ONLY] = CE_FIELD(rx_only), [CE_BW] = CE_FIELD(bw),
+ 	[CE_RX_TONE] = CE_FIELD(rx_tone), [CE_TX_TONE] = CE_FIELD(tx_tone), [CE_VOX] = CE_FIELD(vox),
+-	[CE_NAC] = CE_FIELD(nac_rx), [CE_TG] = CE_FIELD(talkgroup),
++	[CE_NAC] = { offsetof(channel_t, nac_rx), 2 * sizeof(uint16_t), 0 },	// nac_rx and nac_tx, side by side
++	[CE_TG] = CE_FIELD(talkgroup),
+ 	[CE_CC] = CE_FIELD(color_code), [CE_TS] = CE_FIELD(timeslot), [CE_CONTACT] = CE_FIELD(contact),
+ 	[CE_LIST] = CE_FIELD(listen_list), [CE_ID] = CE_FIELD(dmr_id), [CE_DMO] = CE_FIELD(dmo),
+ 	[CE_BEEP] = CE_FIELD(no_beep), [CE_ALIAS1] = { offsetof(channel_t, alias_tx), 1, CODEPLUG_ALIAS_TS1_TEXT },
+@@ -2051,7 +2052,7 @@
+ 				sb_str(&b, TR(", RX other"));
+ 			break;
+ 		}
+-		// The TX NAC in hex, and RX: the same one or every NAC (OK switches them; the values from the editor or CSV)
++		// The TX NAC in hex, typed (ced_digit), and RX: the same one or every NAC (OK with nothing typed switches them)
+ 		static const char hex[] = "0123456789ABCDEF";
+ 		for (int s = 8; s >= 0; s -= 4)
+ 			sb_chr(&b, hex[(ch->nac_tx >> s) & 0xFu]);
+@@ -2294,6 +2295,20 @@
+ 		ced_len = 0;
+ 		ced_tone = tones_step(&ced_tone, dir);
+ 		break;
++	case CE_NAC: {
++		// A P25 NAC's last typed digit steps through 0-F, as the keys have no A-F (a step with none typed types a 0)
++		if (ced_ch.mode == RADIO_MODE_NXDN)
++			break;
++		if (ced_len == 0) {
++			ced_val = 0;
++			ced_len = 1;
++		}
++		int32_t n = ((ced_val & 0xF) + dir + 16) % 16;
++		ced_val = (ced_val & ~0xF) | n;
++		ced_digits[ced_len - 1] = "0123456789ABCDEF"[n];
++		ced_digits[ced_len] = 0;
++		break;
++	}
+ 	default:
+ 		break;
+ 	}
+@@ -2330,8 +2345,12 @@
+ 		ced_digits[ced_len++] = d;
+ 		ced_digits[ced_len] = 0;
+ 		break;
+-	case CE_NAC:		// an NXDN channel's RAN
+-		if (v > 63) {
++	case CE_NAC:		// a P25 channel's NAC: 3 hex digits. An NXDN channel's RAN
++		if (ced_ch.mode != RADIO_MODE_NXDN) {
++			if (ced_len >= 3)
++				break;
++			v = ced_val * 16 + (d - '0');
++		} else if (v > 63) {
+ 			ui_toast(TR("RAN goes 0 to 63"));
+ 			break;
+ 		}
+@@ -2396,8 +2415,19 @@
+ 			c->talkgroup = (uint16_t)ced_val;
+ 		break;
+ 	case CE_NAC:
+-		if (ced_len > 0)
+-			c->nac_rx = c->nac_tx = (uint16_t)ced_val;	// an NXDN channel's RAN
++		if (c->mode == RADIO_MODE_NXDN) {
++			if (ced_len > 0)
++				c->nac_rx = c->nac_tx = (uint16_t)ced_val;	// an NXDN channel's RAN
++		} else if (ced_len == 0) {
++			c->nac_rx = c->nac_rx == CODEPLUG_NAC_ANY ? c->nac_tx : CODEPLUG_NAC_ANY;	// RX: every NAC, or the TX one
++		} else if (ced_val >= (int32_t)CODEPLUG_NAC_ANY) {
++			ui_toast(TR("NAC goes 000 to F7D"));
++			return;
++		} else {
++			if (c->nac_rx != CODEPLUG_NAC_ANY)
++				c->nac_rx = (uint16_t)ced_val;	// RX follows TX, unless it hears every NAC
++			c->nac_tx = (uint16_t)ced_val;
++		}
+ 		break;
+ 	case CE_POWER:
+ 		c->power = ced_val >= board.power_count ? CODEPLUG_POWER_DEFAULT : (uint8_t)ced_val;
+@@ -2444,8 +2474,8 @@
+ 	int dir = ev->action == ACT_NAV_UP ? 1 : ev->action == ACT_NAV_DOWN ? -1 :
+ 		ev->action == ACT_ENC_STEP ? (ev->value > 0 ? 1 : -1) : 0;
+ 	if (dir != 0 && ev->gesture != GESTURE_UP) {
+-		if (ced_edit != CE_RX && ced_edit != CE_TX && ced_edit != CE_ID && ced_edit != CE_TG && ced_edit != CE_NAC)
+-			ced_spin(dir);	// typed fields ignore the knob, so the focus can't move under them either
++		if (ced_edit != CE_RX && ced_edit != CE_TX && ced_edit != CE_ID && ced_edit != CE_TG)
++			ced_spin(dir);	// typed fields ignore the knob (a P25 NAC: it steps the last digit), so the focus can't move
+ 		ui_dirty();
+ 		return true;
+ 	}
+@@ -2458,7 +2488,7 @@
+ 		if ((ced_edit == CE_RX || ced_edit == CE_TX || ced_edit == CE_ID || ced_edit == CE_TG || ced_edit == CE_NAC ||
+ 		     ced_edit == CE_RX_TONE || ced_edit == CE_TX_TONE) && ced_len > 0) {
+ 			ced_digits[--ced_len] = 0;	// takes the last digit back
+-			ced_val /= 10;
++			ced_val /= ced_edit == CE_NAC && ced_ch.mode != RADIO_MODE_NXDN ? 16 : 10;
+ 		} else {
+ 			ced_edit = CE_NONE;		// leaves the editor, the row unchanged
+ 		}
+@@ -2529,16 +2559,7 @@
+ 		}
+ 		ced_build();
+ 		break;
+-	case CE_NAC:
+-		if (c->mode != RADIO_MODE_NXDN) {
+-			c->nac_rx = c->nac_rx == CODEPLUG_NAC_ANY ? c->nac_tx : CODEPLUG_NAC_ANY;
+-			break;
+-		}
+-		ced_edit = r;		// an NXDN channel's RAN is typed, as the rows below
+-		ced_len = 0;
+-		ced_val = 0;
+-		ced_digits[0] = 0;
+-		break;
++	case CE_NAC:		// typed: a P25 NAC in hex (OK alone switches RX any), an NXDN RAN
+ 	case CE_TG:
+ 	case CE_RX:
+ 	case CE_TX:
+--- a/core/ui/lang/es.po
++++ b/core/ui/lang/es.po
+@@ -1733,6 +1733,10 @@
+ msgstr "RAN de 0 a 63"
+ 
+ #: core/ui/ui_menus.c
++msgid "NAC goes 000 to F7D"
++msgstr "NAC de 000 a F7D"
++
++#: core/ui/ui_menus.c
+ msgid "DCS codes use digits 0-7"
+ msgstr "Códigos DCS: dígitos 0-7"
+ 
+--- a/core/ui/lang/it.po
++++ b/core/ui/lang/it.po
+@@ -1733,6 +1733,10 @@
+ msgstr "RAN da 0 a 63"
+ 
+ #: core/ui/ui_menus.c
++msgid "NAC goes 000 to F7D"
++msgstr "NAC da 000 a F7D"
++
++#: core/ui/ui_menus.c
+ msgid "DCS codes use digits 0-7"
+ msgstr "Codici DCS: cifre 0-7"
+ 
+--- a/tests/host/uiFlowTest.c
++++ b/tests/host/uiFlowTest.c
+@@ -317,6 +317,18 @@
+ 	  "ok 5 5 5 1 back ok", "shows=555 hides=5551", 7, false },
+ 	{ "E own ID: at most 8 digits", "ok 5 ok down down down down down down down down down down down",
+ 	  "ok 0 0 0 0 0 0 0 0 0 0", "shows=00000000 hides=000000000", 11, false },
++#if CONFIG_P25 && CONFIG_P25_NATIVE
++	// A P25 channel's NAC on the radio: channel 3 made P25 (Mode is row 2, NAC row 7). The keys type hex digits, the
++	// knob steps the last one through 0-F for the letters; OK alone switches RX between our NAC and every NAC
++#define CE_P25_NAC	"ok 5 ok down down ok down down down down down"
++	{ "E P25 NAC typed, the knob steps a letter", CE_P25_NAC, "ok 1 0 down ok", "shows=01F", 5, false },
++	{ "E P25 NAC: Back takes back a hex digit", CE_P25_NAC, "ok 1 0 down back 2 ok", "shows=012", 7, false },
++	{ "E P25 NAC: at most 3 digits", CE_P25_NAC, "ok 1 2 3 4", "shows=123 hides=1234", 5, false },
++	{ "E P25 NAC past F7D is refused", CE_P25_NAC, "ok 0 down 0 down 0 down ok", "toast=NAC_goes", 8, false },
++	{ "E P25 NAC: OK alone switches RX any", CE_P25_NAC, "ok ok", "shows=RX_any", 2, false },
++	{ "E P25 NAC: a TX NAC change with RX any saves", CE_P25_NAC " ok ok long:ok", "ok 4 5 6 ok long:ok",
++	  "toast=Saved_channel shows=456 shows=RX_any writes=2", 6, true },
++#endif
+ 	{ "E time-out in steps of 15", "ok 5 ok down down down down down down down down down down down down down down down "
+ 	  "down", "ok 7 ok", "toast=Not_changed", 3, false },
+ 	{ "E time-out spinner", "ok 5 ok down down down down down down down down down down down down down down down down",
+--- a/tests/host/Makefile
++++ b/tests/host/Makefile
+@@ -478,7 +478,7 @@
+ UIFLAGS := -std=gnu99 -Wall -Wextra -Wno-unused-parameter -Wshadow -g $(COVFLAGS) $(SANFLAGS) -I$(CORE) -I$(ROOT)/hal -I. -Iout/gen \
+            '-DGFX_FB_BYTES=(320u*320u*2u)' -DGFX_MAX_ROWS=320 -DCONFIG_FONT_XL=1 -DFONT_BOTH -DGFX_INDEXED=1 -DGFX_FIT_TRACE
+ UIDEPS  := $(UIAPP) $(ABOUT_H) $(LANG_H) $(wildcard $(CORE)/ui/*.h $(CORE)/ui/fonts/*.inc sim/ui_sim.h)
+-TESTS   += uiFlowTest uiFlowTestNoColor uiSim
++TESTS   += uiFlowTest uiFlowTestNoColor uiFlowTestP25 uiSim
+ 
+ uiFlowTest: uiFlowTest.c $(UIDEPS)
+ 	$(CC) $(UIFLAGS) -o $@ uiFlowTest.c $(UIAPP) -lz
+@@ -487,6 +487,10 @@
+ # without a translation (CONFIG_LANG_ES=n): the Language screen dims Spanish
+ uiFlowTestNoColor: uiFlowTest.c $(UIDEPS)
+ 	$(CC) $(UIFLAGS) -DCONFIG_UI_COLOR=0 -DCONFIG_LANG_ES=0 -o $@ uiFlowTest.c $(UIAPP) -lz
++
++# And as the multi-mode derivative builds them (P25 and NXDN): the channel editor's P25 rows, the NAC typed in hex
++uiFlowTestP25: uiFlowTest.c $(UIDEPS)
++	$(CC) $(UIFLAGS) -DCONFIG_P25=1 -DCONFIG_P25_NATIVE=1 -DCONFIG_NXDN=1 -o $@ uiFlowTest.c $(UIAPP) -lz
+ 
+ uiSim: uiSim.c $(UIDEPS)
+ 	$(CC) $(UIFLAGS) -o $@ uiSim.c $(UIAPP) -lz
+@@ -525,13 +529,14 @@
+ 	UI_GALLERY_COLORS="$(UI_GALLERY_COLORS)" ./uiSim --sheets out/sheets $(GEOM)
+ 
+ run: run-ui
+-run-ui: gfxTest i18nTest i18nTestNoLang i18nTestDefault uiFlowTest uiFlowTestNoColor uiSim beepReel
++run-ui: gfxTest i18nTest i18nTestNoLang i18nTestDefault uiFlowTest uiFlowTestNoColor uiFlowTestP25 uiSim beepReel
+ 	./gfxTest
+ 	./i18nTest
+ 	./i18nTestNoLang
+ 	./i18nTestDefault
+ 	./uiFlowTest
+ 	./uiFlowTestNoColor
++	./uiFlowTestP25
+ 	./uiSim --layout
+ 	./beepReel --out out/beep-reel --no-frames > /dev/null	# checks every beep has a scene and the scenes still run
+ .PHONY: run-ui ui-gallery ui-sheets
