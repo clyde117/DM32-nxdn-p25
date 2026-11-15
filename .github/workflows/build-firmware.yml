@@ -1,0 +1,97 @@
+name: Build DM-32UV firmware
+
+# Builds the codec-less image (rfoundry_dm32.bin) from the checked-out branch,
+# exactly as the README describes:
+#   python3 tools/build_radiofoundry.py --speed-codec --stack-check
+# It does NOT use --with-local-stock, so no AMBE codec is merged or published.
+# The web flasher adds the codec from your own radio / stock firmware.
+#
+# Run it from the Actions tab ("Run workflow"). The first run builds the C-SKY
+# GCC toolchain from source (about 1-2 hours); later runs restore it from cache.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      JOBS: 4
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential texinfo flex bison xz-utils curl git python3 \
+            zlib1g-dev libgmp-dev libmpfr-dev libmpc-dev
+
+      # The toolchain (GCC + binutils + newlib) is the slow part. It only
+      # depends on the bootstrap scripts and the pinned download list.
+      - name: Restore the toolchain cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: toolchain
+          key: csky-toolchain-${{ hashFiles('tools/bootstrap_toolchain.sh', 'tools/bootstrap_newlib.sh', 'tools/sources.py') }}
+
+      - name: Build the C-SKY toolchain (cache miss only)
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: |
+          sh tools/bootstrap_toolchain.sh
+          sh tools/bootstrap_newlib.sh
+
+      - name: Show the toolchain
+        run: |
+          toolchain/bin/csky-elf-gcc --version
+          ls -l toolchain/csky-elf/lib/libc.a
+
+      # Always run: the build driver needs research/upstream/* (the pinned
+      # RadioFoundry tree) even when the toolchain came from cache. This also
+      # downloads reference material into research/, which stays on the runner
+      # and is never uploaded.
+      - name: Fetch the pinned upstream sources
+        run: python3 tools/sources.py fetch
+
+      - name: Build the firmware image
+        run: python3 tools/build_radiofoundry.py --speed-codec --stack-check
+
+      - name: Check the derivative tree matches the patch series
+        run: python3 tools/rf_patch.py check
+
+      - name: Collect the image
+        run: |
+          mkdir -p out
+          BIN="$(find build/radiofoundry-p25 -name rfoundry_dm32.bin -print -quit)"
+          test -n "$BIN" || { echo "rfoundry_dm32.bin was not produced"; exit 1; }
+          cp "$BIN" out/rfoundry_dm32.bin
+          (cd out && sha256sum rfoundry_dm32.bin | tee rfoundry_dm32.bin.sha256)
+          ls -l out
+          # Record which patches this image was built from.
+          ls integration/radiofoundry/patches > out/patches-included.txt
+          git rev-parse HEAD > out/source-commit.txt
+
+      # Only the codec-less image and its hash are uploaded. Never upload
+      # research/ (it holds third-party stock firmware) or any .codec.bin.
+      - name: Upload the image
+        uses: actions/upload-artifact@v4
+        with:
+          name: dm32-firmware
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
